@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: roomi-socket-provider
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: CORS_ORIGIN
+        sync: false
