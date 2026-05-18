@@ -54,5 +54,7 @@ export async function POST(request: Request) {
     await autoPlayTrack(room.roomCode, result.autoPlayTrack);
   }
 
-  return NextResponse.json({ ok: true });
+  const updatedRoom = await providerGetRoom(room.roomCode, guestId);
+
+  return NextResponse.json(updatedRoom ?? result.state ?? { ok: true });
 }

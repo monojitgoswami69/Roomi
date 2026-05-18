@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });
   }
 
-  const queue = await providerVote(room.roomCode, guestId, trackId, voteValue);
+  const roomState = await providerVote(room.roomCode, guestId, trackId, voteValue);
 
-  return NextResponse.json(queue);
+  return NextResponse.json(roomState);
 }

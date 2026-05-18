@@ -84,6 +84,10 @@ function sortQueue(code) {
   if (!room) return;
   const order = getQueueOrder(room.code);
   room.queue.sort((a, b) => {
+    if (a.score !== b.score) {
+      return b.score - a.score;
+    }
+
     const aAddedAt = order.get(a.track.id) ?? Number.MAX_SAFE_INTEGER;
     const bAddedAt = order.get(b.track.id) ?? Number.MAX_SAFE_INTEGER;
     return aAddedAt - bAddedAt;
@@ -121,7 +125,10 @@ function buildPublicRoomState(room, viewerId) {
 function emitRoomUpdated(io, code) {
   const room = getRoom(code);
   if (!room) return;
-  io.to(room.code).emit("room-updated", buildPublicRoomState(room));
+  io.sockets.sockets.forEach((roomSocket) => {
+    if (!roomSocket.rooms.has(room.code)) return;
+    roomSocket.emit("room-updated", buildPublicRoomState(room, roomSocket.data?.guestId));
+  });
 }
 
 function isTrackInUse(code, trackId) {
@@ -227,6 +234,7 @@ function vote(code, trackId, guestId, voteValue) {
   }
 
   item.score = item.upvotes - item.downvotes;
+  sortQueue(room.code);
   touchRoom(room);
   return room.queue;
 }
@@ -327,7 +335,7 @@ app.post("/api/rooms/join", (req, res) => {
   }
   const status = requestGuestAccess(roomCode, guestId, displayName);
   emitRoomUpdated(io, roomCode);
-  res.json({ status, roomCode });
+  res.json({ status, roomCode, state: buildPublicRoomState(room, guestId) });
 });
 
 app.post("/api/rooms/disconnect", (req, res) => {
@@ -430,7 +438,7 @@ app.post("/api/rooms/:roomCode/queue", (req, res) => {
   addToQueue(roomCode, queueItem);
   const autoPlayTrack = room.currentTrack === null && room.queue.length === 1 ? queueItem.track : null;
   emitRoomUpdated(io, roomCode);
-  res.json({ ok: true, autoPlayTrack });
+  res.json({ ok: true, autoPlayTrack, state: buildPublicRoomState(room, guestId) });
 });
 
 app.post("/api/rooms/:roomCode/vote", (req, res) => {
@@ -446,9 +454,10 @@ app.post("/api/rooms/:roomCode/vote", (req, res) => {
     res.status(403).json({ error: "Guest not approved for this room" });
     return;
   }
-  const queue = vote(roomCode, trackId, guestId, voteValue);
+  vote(roomCode, trackId, guestId, voteValue);
+  const room = getRoom(roomCode);
   emitRoomUpdated(io, roomCode);
-  res.json(queue);
+  res.json(room ? buildPublicRoomState(room, guestId) : { queue: [] });
 });
 
 app.post("/api/rooms/:roomCode/current", (req, res) => {
@@ -481,8 +490,11 @@ io.on("connection", (socket) => {
       if (joinState === "missing") return;
     }
 
+    socket.data.roomCode = room.code;
+    socket.data.guestId = guestId;
     socket.join(room.code);
     socket.emit("room-join-status", { status: joinState });
+    socket.emit("room-updated", buildPublicRoomState(room, guestId));
     emitRoomUpdated(io, room.code);
   });
 });

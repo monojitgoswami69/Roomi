@@ -134,6 +134,11 @@ type RoomUpdatedPayload = {
   access: "open" | "locked";
 };
 
+type RoomStatePayload = RoomUpdatedPayload & {
+  roomCode?: string;
+  hostId?: string;
+};
+
 declare global {
   interface Window {
     roomiDeviceId?: string;
@@ -215,6 +220,15 @@ export default function HostPage() {
     () => Object.entries(pendingGuests).map(([id, name]) => ({ id, name })),
     [pendingGuests],
   );
+
+  const applyRoomState = useCallback((payload: RoomUpdatedPayload | RoomStatePayload | null | undefined) => {
+    if (!payload) return;
+    setQueue(payload.queue ?? []);
+    setCurrentTrack(payload.currentTrack ?? null);
+    setGuests(payload.guests ?? {});
+    setPendingGuests(payload.pendingGuests ?? {});
+    setRoomAccessState(payload.access ?? "open");
+  }, []);
 
   const fetchNextTrack = useCallback(async () => {
     if (!roomCode || skipGuardRef.current) return;
@@ -353,11 +367,7 @@ export default function HostPage() {
 
         setRoomCode(roomPayload.roomCode ?? "");
         setHostId(roomPayload.hostId ?? "");
-        setQueue(roomPayload.queue ?? []);
-        setCurrentTrack(roomPayload.currentTrack ?? null);
-        setGuests(roomPayload.guests ?? {});
-        setPendingGuests(roomPayload.pendingGuests ?? {});
-        setRoomAccessState(roomPayload.access ?? "open");
+        applyRoomState(roomPayload);
       } catch {
         if (!cancelled) setError("Failed to initialize host room");
       } finally {
@@ -373,7 +383,7 @@ export default function HostPage() {
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, [applyRoomState, router]);
 
   // Refresh the Spotify access token every 45 minutes (tokens expire in 60 min)
   useEffect(() => {
@@ -396,20 +406,20 @@ export default function HostPage() {
       const response = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`, { cache: "no-store" });
       if (!response.ok) return;
       const payload = await response.json();
-      setQueue(payload.queue ?? []);
-      setCurrentTrack(payload.currentTrack ?? null);
-      setGuests(payload.guests ?? {});
-      setPendingGuests(payload.pendingGuests ?? {});
-      setRoomAccessState(payload.access ?? "open");
+      applyRoomState(payload);
     } catch {
       // keep socket as the primary transport
     }
-  }, [roomCode]);
+  }, [applyRoomState, roomCode]);
 
   useEffect(() => {
     if (!roomCode || !hostId) return;
     const socket = io(socketUrl || undefined, {
-      transports: ["websocket"],
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 250,
+      reconnectionDelayMax: 2000,
     });
     socketRef.current = socket;
     socket.on("connect", () => {
@@ -417,17 +427,13 @@ export default function HostPage() {
       void refreshRoomState();
     });
     socket.on("room-updated", (payload: RoomUpdatedPayload) => {
-      setQueue(payload.queue ?? []);
-      setCurrentTrack(payload.currentTrack ?? null);
-      setGuests(payload.guests ?? {});
-      setPendingGuests(payload.pendingGuests ?? {});
-      setRoomAccessState(payload.access ?? "open");
+      applyRoomState(payload);
     });
     return () => {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [roomCode, hostId, refreshRoomState]);
+  }, [applyRoomState, roomCode, hostId, refreshRoomState]);
 
   // ── Client-side auto-play hook ──
   // When the queue has songs but nothing is playing, auto-trigger playback.
@@ -897,7 +903,16 @@ export default function HostPage() {
                   <p className="mt-1 text-xs text-slate-500">Open the popup and build the next wave.</p>
                 </div>
               ) : (
-                <Queue items={queue} guestId={hostId} roomCode={roomCode} currentTrack={currentTrack} />
+                <Queue
+                  items={queue}
+                  guestId={hostId}
+                  roomCode={roomCode}
+                  currentTrack={currentTrack}
+                  onStateChange={({ queue: nextQueue, currentTrack: nextCurrentTrack }) => {
+                    setQueue(nextQueue);
+                    setCurrentTrack(nextCurrentTrack);
+                  }}
+                />
               )}
             </div>
             </div>
@@ -1012,6 +1027,10 @@ export default function HostPage() {
         guestId={hostId}
         queuedTrackIds={queue.map((item) => item.track.id)}
         currentTrackId={currentTrack?.id ?? null}
+        onStateChange={({ queue: nextQueue, currentTrack: nextCurrentTrack }) => {
+          setQueue(nextQueue);
+          setCurrentTrack(nextCurrentTrack);
+        }}
       />
     </div>
   );

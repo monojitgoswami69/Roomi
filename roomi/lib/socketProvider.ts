@@ -1,4 +1,4 @@
-import type { PublicRoomState, QueueItem, Room, Track } from "@/lib/roomStore";
+import type { PublicRoomState, Room, Track } from "@/lib/roomStore";
 
 const providerUrl = process.env.SOCKET_PROVIDER_URL?.replace(/\/$/, "");
 
@@ -68,7 +68,7 @@ export async function providerJoinRoom(body: {
   roomCode: string;
   guestId: string;
   displayName: string;
-}): Promise<{ status: "approved" | "pending"; roomCode: string }> {
+}): Promise<{ status: "approved" | "pending"; roomCode: string; state?: ProviderRoomState }> {
   return providerRequest("/api/rooms/join", {
     method: "POST",
     body,
@@ -118,14 +118,14 @@ export async function providerModerateGuest(
   });
 }
 
-export async function providerAddTrack(roomCode: string, guestId: string, track: Track): Promise<{ autoPlayTrack?: Track }> {
+export async function providerAddTrack(roomCode: string, guestId: string, track: Track): Promise<{ autoPlayTrack?: Track; state?: ProviderRoomState }> {
   return providerRequest(`/api/rooms/${roomCode}/queue`, {
     method: "POST",
     body: { guestId, track },
   });
 }
 
-export async function providerVote(roomCode: string, guestId: string, trackId: string, vote: "up" | "down"): Promise<QueueItem[]> {
+export async function providerVote(roomCode: string, guestId: string, trackId: string, vote: "up" | "down"): Promise<ProviderRoomState> {
   return providerRequest(`/api/rooms/${roomCode}/vote`, {
     method: "POST",
     body: { guestId, trackId, vote },

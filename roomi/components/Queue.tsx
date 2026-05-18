@@ -32,6 +32,10 @@ type QueueProps = {
   guestId: string;
   roomCode: string;
   currentTrack?: QueueTrack | null;
+  onStateChange?: (payload: {
+    queue: QueueItemData[];
+    currentTrack: QueueTrack | null;
+  }) => void;
 };
 
 function scoreTone(score: number) {
@@ -40,7 +44,7 @@ function scoreTone(score: number) {
   return "text-slate-400";
 }
 
-export default function Queue({ items, guestId, roomCode, currentTrack = null }: QueueProps) {
+export default function Queue({ items, guestId, roomCode, currentTrack = null, onStateChange }: QueueProps) {
   const [pendingTrackId, setPendingTrackId] = useState<string | null>(null);
 
   const sortedItems = useMemo(() => items, [items]);
@@ -67,11 +71,18 @@ export default function Queue({ items, guestId, roomCode, currentTrack = null }:
     if (!guestId || !roomCode) return;
     setPendingTrackId(trackId);
     try {
-      await fetch("/api/queue/vote", {
+      const response = await fetch("/api/queue/vote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ roomCode, trackId, guestId, vote }),
       });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload?.queue) {
+        onStateChange?.({
+          queue: payload.queue,
+          currentTrack: payload.currentTrack ?? currentTrack,
+        });
+      }
     } finally {
       setPendingTrackId(null);
     }

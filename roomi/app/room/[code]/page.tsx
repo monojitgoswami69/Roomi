@@ -28,6 +28,11 @@ type RoomUpdatedPayload = {
   access: "open" | "locked";
 };
 
+type RoomStatePayload = RoomUpdatedPayload & {
+  roomCode?: string;
+  hostId?: string;
+};
+
 const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
 
 function CustomQRCode({ value }: { value: string }) {
@@ -140,20 +145,27 @@ function GuestRoomInner() {
   const [progressMs, setProgressMs] = useState(0);
   const trackStartRef = useRef<number>(0);
   const prevTrackIdRef = useRef<string | null>(null);
+  const [localQueueOverride, setLocalQueueOverride] = useState<UIQueueItem[] | null>(null);
+
+  const applyRoomState = useCallback((payload: RoomUpdatedPayload | RoomStatePayload | null | undefined) => {
+    if (!payload) return;
+    setQueue(payload.queue ?? []);
+    setCurrentTrack(payload.currentTrack ?? null);
+    setGuestCount(payload.guestCount ?? 0);
+    setRoomAccess(payload.access ?? "open");
+  }, []);
 
   const refreshRoomState = useCallback(async () => {
     try {
       const response = await fetch(`/api/room/${roomCode}?viewerId=${encodeURIComponent(guestId)}`, { cache: "no-store" });
       if (!response.ok) return;
       const payload = await response.json();
-      setQueue(payload.queue ?? []);
-      setCurrentTrack(payload.currentTrack ?? null);
-      setGuestCount(payload.guestCount ?? 0);
-      setRoomAccess(payload.access ?? "open");
+      applyRoomState(payload);
+      setLocalQueueOverride(null);
     } catch {
       // socket remains primary
     }
-  }, [guestId, roomCode]);
+  }, [applyRoomState, guestId, roomCode]);
 
   const copyCode = async () => {
     await navigator.clipboard.writeText(roomCode);
@@ -171,14 +183,16 @@ function GuestRoomInner() {
       if (!response.ok) { router.replace("/?error=room-not-found"); return; }
       const data = await response.json();
       if (cancelled) return;
-      setQueue(data.queue ?? []);
-      setCurrentTrack(data.currentTrack ?? null);
-      setGuestCount(data.guestCount ?? 0);
-      setRoomAccess(data.access ?? "open");
+      applyRoomState(data);
+      setLocalQueueOverride(null);
       setLoading(false);
 
       socket = io(socketUrl || undefined, {
-        transports: ["websocket"],
+        transports: ["websocket", "polling"],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 250,
+        reconnectionDelayMax: 2000,
       });
       socket.on("connect", () => {
         socket?.emit("join-room", { roomCode, guestId, displayName });
@@ -188,10 +202,8 @@ function GuestRoomInner() {
         setJoinState(payload?.status === "pending" ? "pending" : "approved");
       });
       socket.on("room-updated", (payload: RoomUpdatedPayload) => {
-        setQueue(payload.queue ?? []);
-        setCurrentTrack(payload.currentTrack ?? null);
-        setGuestCount(payload.guestCount ?? 0);
-        setRoomAccess(payload.access ?? "open");
+        applyRoomState(payload);
+        setLocalQueueOverride(null);
         setJoinState((current) => {
           if (payload.guests?.[guestId]) return "approved";
           if (payload.pendingGuests?.[guestId]) return "pending";
@@ -207,7 +219,7 @@ function GuestRoomInner() {
       cancelled = true;
       socket?.disconnect();
     };
-  }, [displayName, guestId, refreshRoomState, roomCode, router]);
+  }, [applyRoomState, displayName, guestId, refreshRoomState, roomCode, router]);
 
   // Estimate playback progress based on elapsed time since track started
   useEffect(() => {
@@ -229,6 +241,7 @@ function GuestRoomInner() {
   }, [currentTrack]);
 
   const visibleProgressMs = currentTrack ? progressMs : 0;
+  const renderedQueue = localQueueOverride ?? queue;
 
   if (loading) {
     return (
@@ -344,9 +357,9 @@ function GuestRoomInner() {
         >
           <ChevronUp className="h-4 w-4 text-slate-400" />
           <span className="text-sm font-semibold text-slate-200">Queue</span>
-          {queue.length > 0 ? (
+          {renderedQueue.length > 0 ? (
             <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-500 px-1.5 text-[11px] font-bold text-slate-950">
-              {queue.length}
+              {renderedQueue.length}
             </span>
           ) : null}
         </button>
@@ -477,7 +490,7 @@ function GuestRoomInner() {
                     Up next
                   </h3>
                 </div>
-                <div className="text-sm font-medium text-slate-400">{queue.length} songs</div>
+                <div className="text-sm font-medium text-slate-400">{renderedQueue.length} songs</div>
               </div>
 
               <button
@@ -509,14 +522,23 @@ function GuestRoomInner() {
               ) : null}
 
               <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                {queue.length === 0 && !currentTrack ? (
+                {renderedQueue.length === 0 && !currentTrack ? (
                   <div className="flex min-h-[14rem] flex-col items-center justify-center px-4 text-center">
                     <ListMusic className="h-7 w-7 text-slate-600" />
                     <p className="mt-3 text-sm font-semibold text-slate-200">No songs queued</p>
                     <p className="mt-1 text-xs text-slate-500">Open the popup and build the next wave.</p>
                   </div>
                 ) : (
-                  <Queue items={queue} guestId={guestId} roomCode={roomCode} currentTrack={currentTrack} />
+                  <Queue
+                    items={renderedQueue}
+                    guestId={guestId}
+                    roomCode={roomCode}
+                    currentTrack={currentTrack}
+                    onStateChange={({ queue: nextQueue, currentTrack: nextCurrentTrack }) => {
+                      setLocalQueueOverride(nextQueue);
+                      setCurrentTrack(nextCurrentTrack);
+                    }}
+                  />
                 )}
               </div>
             </div>
@@ -530,8 +552,12 @@ function GuestRoomInner() {
         onClose={() => setShowSearch(false)}
         roomCode={roomCode}
         guestId={guestId}
-        queuedTrackIds={queue.map((i) => i.track.id)}
+        queuedTrackIds={renderedQueue.map((i) => i.track.id)}
         currentTrackId={currentTrack?.id ?? null}
+        onStateChange={({ queue: nextQueue, currentTrack: nextCurrentTrack }) => {
+          setLocalQueueOverride(nextQueue);
+          setCurrentTrack(nextCurrentTrack);
+        }}
       />
     </div>
   );

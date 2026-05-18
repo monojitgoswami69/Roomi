@@ -20,6 +20,18 @@ type SearchModalProps = {
   queuedTrackIds: string[];
   currentTrackId?: string | null;
   onClose: () => void;
+  onStateChange?: (payload: {
+    queue: Array<{
+      track: Track;
+      upvotes: number;
+      downvotes: number;
+      score: number;
+      myVote?: "up" | "down" | null;
+      voteCount?: number;
+      voters?: Record<string, "up" | "down">;
+    }>;
+    currentTrack: Track | null;
+  }) => void;
 };
 
 type MoodCategory = {
@@ -185,6 +197,7 @@ export default function SearchModal({
   queuedTrackIds,
   currentTrackId,
   onClose,
+  onStateChange,
 }: SearchModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Track[]>([]);
@@ -354,8 +367,15 @@ export default function SearchModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ roomCode, guestId, track }),
         });
+        const payload = await response.json().catch(() => null);
         if (response.ok) {
           addedCount += 1;
+          if (payload?.queue) {
+            onStateChange?.({
+              queue: payload.queue,
+              currentTrack: payload.currentTrack ?? null,
+            });
+          }
         } else {
           failedCount += 1;
         }
