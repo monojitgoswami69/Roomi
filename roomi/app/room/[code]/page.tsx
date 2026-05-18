@@ -207,11 +207,11 @@ function GuestRoomInner() {
       setLoading(false);
 
       socket = io(socketUrl || undefined, {
-        transports: ["websocket", "polling"],
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 250,
         reconnectionDelayMax: 2000,
+        timeout: 10000,
       });
       socket.on("connect", () => {
         setSocketStatus("connected");

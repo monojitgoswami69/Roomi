@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { providerGetRoom, providerPlayNext } from "@/lib/socketProvider";
+import { providerPlayNext } from "@/lib/socketProvider";
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
@@ -9,18 +9,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "roomCode is required" }, { status: 400 });
   }
 
-  const room = await providerGetRoom(roomCode);
-  if (!room) {
-    return NextResponse.json({ error: "Room not found" }, { status: 404 });
-  }
-
   try {
-    const result = await providerPlayNext(room.roomCode);
+    const result = await providerPlayNext(roomCode);
     return NextResponse.json(result);
   } catch (error) {
+    const status = error instanceof Error && error.message === "Room not found" ? 404 : 500;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to play next track" },
-      { status: 500 },
+      { status },
     );
   }
 }

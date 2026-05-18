@@ -319,8 +319,25 @@ export default function HostPage() {
 
         const roomResponse = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`);
         if (!roomResponse.ok) {
-          setError("Room not found. Create a new room from the home page.");
-          setLoading(false);
+          setError("Realtime service is recovering your room...");
+          const recreateResponse = await fetch("/api/room/create", { method: "POST" });
+          if (!recreateResponse.ok) {
+            setError("Room not found. Create a new room from the home page.");
+            setLoading(false);
+            return;
+          }
+          const retryRoomResponse = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`);
+          if (!retryRoomResponse.ok) {
+            setError("Room not found. Create a new room from the home page.");
+            setLoading(false);
+            return;
+          }
+          const retryRoomPayload = await retryRoomResponse.json();
+          if (cancelled) return;
+          setError("");
+          setRoomCode(retryRoomPayload.roomCode ?? "");
+          setHostId(retryRoomPayload.hostId ?? "");
+          applyRoomState(retryRoomPayload);
           return;
         }
         const roomPayload = await roomResponse.json();
@@ -365,22 +382,35 @@ export default function HostPage() {
     if (!roomCode) return;
     try {
       const response = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`, { cache: "no-store" });
+      if (response.status === 404) {
+        setError("Realtime service is recovering your room...");
+        const recreateResponse = await fetch("/api/room/create", { method: "POST" });
+        if (!recreateResponse.ok) return;
+        const retryRoomResponse = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`, { cache: "no-store" });
+        if (!retryRoomResponse.ok) return;
+        const retryRoomPayload = await retryRoomResponse.json();
+        setError("");
+        applyRoomState(retryRoomPayload);
+        setRoomCode(retryRoomPayload.roomCode ?? roomCode);
+        setHostId(retryRoomPayload.hostId ?? hostId);
+        return;
+      }
       if (!response.ok) return;
       const payload = await response.json();
       applyRoomState(payload);
     } catch {
       // keep socket as the primary transport
     }
-  }, [applyRoomState, roomCode]);
+  }, [applyRoomState, hostId, roomCode]);
 
   useEffect(() => {
     if (!roomCode || !hostId) return;
     const socket = io(socketUrl || undefined, {
-      transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 250,
       reconnectionDelayMax: 2000,
+      timeout: 10000,
     });
     socketRef.current = socket;
     socket.on("connect", () => {

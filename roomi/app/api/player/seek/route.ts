@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { providerGetRoom, providerSeek } from "@/lib/socketProvider";
+import { providerSeek } from "@/lib/socketProvider";
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
@@ -10,18 +10,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "roomCode and positionMs are required" }, { status: 400 });
   }
 
-  const room = await providerGetRoom(roomCode);
-  if (!room) {
-    return NextResponse.json({ error: "Room not found" }, { status: 404 });
-  }
-
   try {
-    const result = await providerSeek(room.roomCode, positionMs);
+    const result = await providerSeek(roomCode, positionMs);
     return NextResponse.json(result);
   } catch (error) {
+    const status = error instanceof Error && error.message === "Room not found" ? 404 : 500;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to seek playback" },
-      { status: 500 },
+      { status },
     );
   }
 }

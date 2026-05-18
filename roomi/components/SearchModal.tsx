@@ -358,39 +358,29 @@ export default function SearchModal({
 
     try {
       const tracksToAdd = selectedTracks.filter((track) => !blockedTrackIds.has(track.id));
-      let addedCount = 0;
-      let failedCount = 0;
-
-      for (const track of tracksToAdd) {
-        const response = await fetch("/api/queue/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ roomCode, guestId, track }),
-        });
-        const payload = await response.json().catch(() => null);
-        if (response.ok) {
-          addedCount += 1;
-          if (payload?.queue) {
-            onStateChange?.({
-              queue: payload.queue,
-              currentTrack: payload.currentTrack ?? null,
-            });
-          }
-        } else {
-          failedCount += 1;
-        }
+      if (tracksToAdd.length === 0) {
+        setError("Selected tracks are already in queue or currently playing");
+        setConfirming(false);
+        return;
       }
 
-      if (addedCount > 0) {
+      const response = await fetch("/api/queue/add/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomCode, guestId, tracks: tracksToAdd }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (response.ok && payload?.queue) {
+        onStateChange?.({
+          queue: payload.queue,
+          currentTrack: payload.currentTrack ?? null,
+        });
         handleClose();
         return;
       }
 
-      if (tracksToAdd.length === 0) {
-        setError("Selected tracks are already in queue or currently playing");
-      } else if (failedCount > 0) {
-        setError("Could not add selected songs");
-      }
+      setError(payload?.error ?? "Could not add selected songs");
       setConfirming(false);
     } catch {
       setError("Could not add selected songs");

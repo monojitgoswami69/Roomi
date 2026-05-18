@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { getAccessToken } from "@/lib/spotify";
+import { providerCreateRoom, providerGetRoom, providerSetAccessToken } from "@/lib/socketProvider";
 
 export async function GET(request: Request) {
   const session = await getSession(request);
@@ -19,6 +20,19 @@ export async function GET(request: Request) {
     const accessToken = await getAccessToken(session.refreshToken);
     session.accessToken = accessToken;
     await session.save();
+    if (session.roomCode) {
+      const room = await providerGetRoom(session.roomCode);
+      if (!room && session.hostId) {
+        const recreated = await providerCreateRoom({
+          hostId: session.hostId,
+          accessToken,
+          refreshToken: session.refreshToken,
+        });
+        session.roomCode = recreated.roomCode;
+        await session.save();
+      }
+      await providerSetAccessToken(session.roomCode, accessToken).catch(() => undefined);
+    }
 
     return NextResponse.json({ access_token: accessToken });
   } catch {

@@ -157,8 +157,9 @@ const Player = forwardRef<PlayerControls, PlayerProps>(
     // reads from accessTokenRef so it always has the latest token without
     // needing to tear down and rebuild the player.
     useEffect(() => {
-      // Wait until we have a real token before starting
-      if (!accessTokenRef.current) return;
+      if (!accessToken) {
+        return;
+      }
 
       let cancelled = false;
       setInitializing(true);
@@ -283,7 +284,7 @@ const Player = forwardRef<PlayerControls, PlayerProps>(
           playerRef.current = null;
         }
       };
-    }, []); // intentionally empty — runs once, reads from refs
+    }, [accessToken]);
 
     return (
       <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-sm text-zinc-300">

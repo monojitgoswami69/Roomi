@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { providerGetRoom } from "@/lib/socketProvider";
+import { providerCreateRoom, providerGetRoom } from "@/lib/socketProvider";
 
 export async function GET(request: Request) {
   const session = await getSession(request);
@@ -9,7 +9,18 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const roomState = await providerGetRoom(session.roomCode, session.hostId);
+  let roomState = await providerGetRoom(session.roomCode, session.hostId);
+
+  if (!roomState && session.hostId && session.accessToken && session.refreshToken) {
+    const recreated = await providerCreateRoom({
+      hostId: session.hostId,
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+    });
+    session.roomCode = recreated.roomCode;
+    await session.save();
+    roomState = await providerGetRoom(recreated.roomCode, session.hostId);
+  }
 
   if (!roomState) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });

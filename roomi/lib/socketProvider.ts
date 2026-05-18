@@ -125,6 +125,17 @@ export async function providerAddTrack(roomCode: string, guestId: string, track:
   });
 }
 
+export async function providerAddTracks(
+  roomCode: string,
+  guestId: string,
+  tracks: Track[],
+): Promise<{ addedCount: number; state?: ProviderRoomState }> {
+  return providerRequest(`/api/rooms/${roomCode}/queue/batch`, {
+    method: "POST",
+    body: { guestId, tracks },
+  });
+}
+
 export async function providerVote(roomCode: string, guestId: string, trackId: string, vote: "up" | "down"): Promise<ProviderRoomState> {
   return providerRequest(`/api/rooms/${roomCode}/vote`, {
     method: "POST",

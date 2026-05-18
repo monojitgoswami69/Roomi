@@ -705,6 +705,45 @@ app.post("/api/rooms/:roomCode/queue", (req, res) => {
     })();
     res.json({ ok: true, state: buildPublicRoomState(room, guestId) });
 });
+app.post("/api/rooms/:roomCode/queue/batch", (req, res) => {
+    const room = getRoom(req.params.roomCode);
+    const guestId = trimString(req.body?.guestId);
+    const tracks = Array.isArray(req.body?.tracks) ? req.body.tracks : [];
+    if (!room) {
+        res.status(404).json({ error: "Room not found" });
+        return;
+    }
+    if (!guestId || tracks.length === 0) {
+        res.status(400).json({ error: "Invalid queue payload" });
+        return;
+    }
+    if (!canInteractInRoom(room, guestId)) {
+        res.status(403).json({ error: "Guest not approved for this room" });
+        return;
+    }
+    let addedCount = 0;
+    for (const track of tracks) {
+        if (!track?.id || !track?.uri || !track?.title || isTrackInUse(room, track.id)) {
+            continue;
+        }
+        const queueItem = {
+            track: { ...track, addedBy: guestId },
+            upvotes: 1,
+            downvotes: 0,
+            score: 1,
+            voters: { [guestId]: "up" },
+        };
+        addToQueue(room, queueItem);
+        addedCount += 1;
+    }
+    if (addedCount > 0) {
+        emitRoomUpdated(io, room.roomCode);
+        if (!room.currentTrack && room.queue.length >= addedCount && Boolean(room.deviceId)) {
+            void startNextTrack(io, room.roomCode);
+        }
+    }
+    res.json({ ok: true, addedCount, state: buildPublicRoomState(room, guestId) });
+});
 app.post("/api/rooms/:roomCode/vote", (req, res) => {
     const room = getRoom(req.params.roomCode);
     const guestId = trimString(req.body?.guestId);
