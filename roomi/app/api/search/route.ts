@@ -1,6 +1,5 @@
-import axios from "axios";
 import { NextResponse } from "next/server";
-import { getAccessToken, searchTracks } from "@/lib/spotify";
+import { getAccessToken, searchTracks, SpotifyApiError } from "@/lib/spotify";
 import { providerGetRoom } from "@/lib/socketProvider";
 
 export async function POST(request: Request) {
@@ -25,7 +24,7 @@ export async function POST(request: Request) {
     const tracks = await searchTracks(room.accessToken ?? "", query);
     return NextResponse.json(tracks);
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
+    if (error instanceof SpotifyApiError && error.status === 401) {
       try {
         const freshToken = await getAccessToken(room.refreshToken ?? "");
         const tracks = await searchTracks(freshToken, query);

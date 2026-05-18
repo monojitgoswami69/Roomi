@@ -1,4 +1,3 @@
-import axios from "axios";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { getSpotifyProfile } from "@/lib/spotify";
@@ -23,7 +22,10 @@ export async function GET(request: Request) {
 
   // Handle cancellation or denial from Spotify OAuth
   if (error || !code) {
-    return NextResponse.redirect(new URL("/?error=auth-cancelled", appOrigin));
+    const session = await getSession(request);
+    session.flashError = "auth-cancelled";
+    await session.save();
+    return NextResponse.redirect(new URL("/", appOrigin));
   }
 
   try {
@@ -33,31 +35,36 @@ export async function GET(request: Request) {
       redirect_uri: redirectUri,
     });
 
-    const response = await axios.post<SpotifyTokenResponse>(
-      "https://accounts.spotify.com/api/token",
-      payload,
-      {
-        headers: {
-          Authorization: getAuthHeader(),
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        Authorization: getAuthHeader(),
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-    );
+      body: payload,
+    });
+    if (!response.ok) {
+      throw new Error(`Spotify token exchange failed: ${response.status}`);
+    }
+    const tokenPayload = (await response.json()) as SpotifyTokenResponse;
 
-    const profile = await getSpotifyProfile(response.data.access_token);
+    const profile = await getSpotifyProfile(tokenPayload.access_token);
     const hostId = crypto.randomUUID();
 
     const session = await getSession(request);
     session.hostId = hostId;
     session.roomCode = undefined;
-    session.accessToken = response.data.access_token;
-    session.refreshToken = response.data.refresh_token;
+    session.accessToken = tokenPayload.access_token;
+    session.refreshToken = tokenPayload.refresh_token;
     session.accountName = profile.displayName;
     session.isHost = true;
     await session.save();
 
     return NextResponse.redirect(new URL("/", appOrigin));
   } catch {
-    return NextResponse.redirect(new URL("/?error=auth-failed", appOrigin));
+    const session = await getSession(request);
+    session.flashError = "auth-failed";
+    await session.save();
+    return NextResponse.redirect(new URL("/", appOrigin));
   }
 }

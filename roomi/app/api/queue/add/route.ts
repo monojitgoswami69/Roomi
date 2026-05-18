@@ -1,37 +1,6 @@
 import { NextResponse } from "next/server";
 import type { Track } from "@/lib/roomStore";
-import { playTrack } from "@/lib/spotify";
-import {
-  providerAddTrack,
-  providerGetRoom,
-  providerRemoveTracks,
-  providerSetAccessToken,
-  providerSetCurrentTrack,
-} from "@/lib/socketProvider";
-
-/**
- * Auto-play the first track when nothing is currently playing.
- * Proactively refreshes the access token to avoid stale-token failures.
- * Removes the track from queue and sets it as currentTrack.
- */
-async function autoPlayTrack(roomCode: string, track: Track): Promise<void> {
-  const room = await providerGetRoom(roomCode);
-  if (!room || !room.deviceId) {
-    return;
-  }
-
-  try {
-    await playTrack(room.accessToken ?? "", room.deviceId, track.uri, {
-      refreshToken: room.refreshToken,
-      onTokenRefresh: (freshToken) => providerSetAccessToken(room.roomCode, freshToken),
-    });
-    await providerRemoveTracks(room.roomCode, [track.id]);
-    await providerSetCurrentTrack(room.roomCode, track);
-  } catch (err) {
-    // Auto-play is best-effort; track stays in queue for client-side auto-play hook
-    console.error("[autoPlayTrack] Failed:", err instanceof Error ? err.message : err);
-  }
-}
+import { providerAddTrack, providerGetRoom } from "@/lib/socketProvider";
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
@@ -49,11 +18,6 @@ export async function POST(request: Request) {
   }
 
   const result = await providerAddTrack(room.roomCode, guestId, track);
-
-  if (result.autoPlayTrack && room.deviceId) {
-    await autoPlayTrack(room.roomCode, result.autoPlayTrack);
-  }
-
   const updatedRoom = await providerGetRoom(room.roomCode, guestId);
 
   return NextResponse.json(updatedRoom ?? result.state ?? { ok: true });

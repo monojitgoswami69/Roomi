@@ -21,6 +21,7 @@ type AuthState = {
   accountName: string;
   hasActiveRoom: boolean;
   roomCode: string | null;
+  flashError?: string | null;
 };
 
 export default function HomePage() {
@@ -31,6 +32,7 @@ export default function HomePage() {
     accountName: "",
     hasActiveRoom: false,
     roomCode: null,
+    flashError: null,
   });
   const [createLoading, setCreateLoading] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
@@ -41,11 +43,7 @@ export default function HomePage() {
   const [joinError, setJoinError] = useState("");
   const canJoin = useMemo(() => code.length === 6 && name.trim().length > 0, [code, name]);
 
-  const [toastMessage, setToastMessage] = useState(() => {
-    if (typeof window === "undefined") return "";
-    const params = new URLSearchParams(window.location.search);
-    return getToastMessage(params.get("error"));
-  });
+  const [toastMessage, setToastMessage] = useState("");
 
   useEffect(() => {
     const existingGuestId = localStorage.getItem("roomi_guest_id");
@@ -66,7 +64,10 @@ export default function HomePage() {
           accountName: String(payload?.accountName ?? ""),
           hasActiveRoom: Boolean(payload?.hasActiveRoom),
           roomCode: payload?.roomCode ? String(payload.roomCode) : null,
+          flashError: payload?.flashError ? String(payload.flashError) : null,
         });
+        const flashMessage = getToastMessage(payload?.flashError ? String(payload.flashError) : null);
+        if (flashMessage) setToastMessage(flashMessage);
       } finally {
         if (!cancelled) setAuthLoading(false);
       }

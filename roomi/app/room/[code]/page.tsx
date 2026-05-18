@@ -7,7 +7,7 @@ import qrcode from "qrcode";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Queue from "@/components/Queue";
 import SearchModal from "@/components/SearchModal";
-import type { Track } from "@/lib/roomStore";
+import type { PlaybackState, Track } from "@/lib/roomStore";
 
 type UIQueueItem = {
   track: Track;
@@ -22,6 +22,7 @@ type UIQueueItem = {
 type RoomUpdatedPayload = {
   queue: UIQueueItem[];
   currentTrack: Track | null;
+  playback?: PlaybackState;
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   guestCount: number;
@@ -31,6 +32,13 @@ type RoomUpdatedPayload = {
 type RoomStatePayload = RoomUpdatedPayload & {
   roomCode?: string;
   hostId?: string;
+};
+
+type SocketAckPayload = {
+  ok?: boolean;
+  error?: string;
+  state?: RoomUpdatedPayload;
+  status?: "approved" | "pending";
 };
 
 const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
@@ -143,14 +151,21 @@ function GuestRoomInner() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const [progressMs, setProgressMs] = useState(0);
-  const trackStartRef = useRef<number>(0);
+  const [playbackState, setPlaybackState] = useState<PlaybackState | null>(null);
   const prevTrackIdRef = useRef<string | null>(null);
   const [localQueueOverride, setLocalQueueOverride] = useState<UIQueueItem[] | null>(null);
+  const [socketStatus, setSocketStatus] = useState<"connecting" | "connected" | "reconnecting" | "offline">("connecting");
 
   const applyRoomState = useCallback((payload: RoomUpdatedPayload | RoomStatePayload | null | undefined) => {
     if (!payload) return;
     setQueue(payload.queue ?? []);
     setCurrentTrack(payload.currentTrack ?? null);
+    if (payload.playback) {
+      setPlaybackState(payload.playback);
+    } else if (!payload.currentTrack) {
+      setPlaybackState(null);
+      setProgressMs(0);
+    }
     setGuestCount(payload.guestCount ?? 0);
     setRoomAccess(payload.access ?? "open");
   }, []);
@@ -180,7 +195,11 @@ function GuestRoomInner() {
 
     const initializeRoom = async () => {
       const response = await fetch(`/api/room/${roomCode}?viewerId=${encodeURIComponent(guestId)}`);
-      if (!response.ok) { router.replace("/?error=room-not-found"); return; }
+      if (!response.ok) {
+        setError("Room not found.");
+        setLoading(false);
+        return;
+      }
       const data = await response.json();
       if (cancelled) return;
       applyRoomState(data);
@@ -195,11 +214,45 @@ function GuestRoomInner() {
         reconnectionDelayMax: 2000,
       });
       socket.on("connect", () => {
-        socket?.emit("join-room", { roomCode, guestId, displayName });
+        setSocketStatus("connected");
+        socket?.emit("join-room", { roomCode, guestId, displayName }, (ack: SocketAckPayload) => {
+          if (ack?.state) {
+            applyRoomState(ack.state);
+            setLocalQueueOverride(null);
+          }
+          if (ack?.status) setJoinState(ack.status);
+          if (ack?.error) setError(ack.error);
+        });
+        socket?.emit("sync-room", {}, (ack: SocketAckPayload) => {
+          if (ack?.state) {
+            applyRoomState(ack.state);
+            setLocalQueueOverride(null);
+          }
+        });
+      });
+      socket.io.on("reconnect_attempt", () => setSocketStatus("reconnecting"));
+      socket.io.on("reconnect", () => {
+        setSocketStatus("connected");
         void refreshRoomState();
       });
+      socket.io.on("reconnect_error", () => setSocketStatus("reconnecting"));
+      socket.on("disconnect", () => setSocketStatus("offline"));
+      socket.on("connect_error", () => setSocketStatus("offline"));
       socket.on("room-join-status", (payload: { status?: "approved" | "pending" }) => {
         setJoinState(payload?.status === "pending" ? "pending" : "approved");
+      });
+      socket.on("room-error", (payload: { error?: string }) => {
+        setError(payload?.error ?? "Socket room error");
+        void refreshRoomState();
+      });
+      socket.on("socket-stale", () => {
+        socket?.emit("sync-room", {}, (ack: SocketAckPayload) => {
+          if (ack?.state) {
+            applyRoomState(ack.state);
+            setLocalQueueOverride(null);
+          }
+        });
+        void refreshRoomState();
       });
       socket.on("room-updated", (payload: RoomUpdatedPayload) => {
         applyRoomState(payload);
@@ -212,6 +265,20 @@ function GuestRoomInner() {
           return current;
         });
       });
+      socket.on("playback:state", (payload: PlaybackState) => {
+        setPlaybackState(payload);
+        setCurrentTrack(payload.track);
+      });
+      socket.on("playback:started", (payload: PlaybackState) => {
+        setPlaybackState(payload);
+        setCurrentTrack(payload.track);
+      });
+      const pingInterval = window.setInterval(() => {
+        socket?.emit("room-ping", {}, (ack: { ok?: boolean }) => {
+          if (!ack?.ok) void refreshRoomState();
+        });
+      }, 15000);
+      socket.on("disconnect", () => window.clearInterval(pingInterval));
     };
 
     initializeRoom().catch(() => { if (!cancelled) { setError("Could not load room"); setLoading(false); } });
@@ -221,24 +288,22 @@ function GuestRoomInner() {
     };
   }, [applyRoomState, displayName, guestId, refreshRoomState, roomCode, router]);
 
-  // Estimate playback progress based on elapsed time since track started
   useEffect(() => {
-    if (!currentTrack) {
+    if (!playbackState?.track) {
       prevTrackIdRef.current = null;
       return;
     }
-    // Reset timer when track changes
-    if (currentTrack.id !== prevTrackIdRef.current) {
-      prevTrackIdRef.current = currentTrack.id;
-      trackStartRef.current = Date.now();
-      setProgressMs(0);
-    }
-    const interval = setInterval(() => {
-      const elapsed = Date.now() - trackStartRef.current;
-      setProgressMs(Math.min(elapsed, currentTrack.durationMs));
-    }, 250);
-    return () => clearInterval(interval);
-  }, [currentTrack]);
+    prevTrackIdRef.current = playbackState.track.id;
+    const updateProgress = () => {
+      const next = playbackState.isPlaying
+        ? playbackState.startedAtPosition + (Date.now() - playbackState.startedAtTimestamp)
+        : playbackState.pausedAtPosition;
+      setProgressMs(Math.max(0, Math.min(playbackState.duration, next)));
+    };
+    updateProgress();
+    const interval = window.setInterval(updateProgress, 500);
+    return () => window.clearInterval(interval);
+  }, [playbackState]);
 
   const visibleProgressMs = currentTrack ? progressMs : 0;
   const renderedQueue = localQueueOverride ?? queue;
@@ -375,8 +440,8 @@ function GuestRoomInner() {
         {/* ── Right column: desktop = inline, mobile = slide-up drawer ── */}
         <section
           className={`
-            fixed inset-x-0 bottom-0 z-50 max-h-[85vh] overflow-hidden rounded-t-3xl border-t border-white/10 bg-slate-950/98 shadow-[0_-20px_60px_rgba(0,0,0,0.6)] backdrop-blur-2xl transition-transform duration-300 ease-out
-            lg:static lg:z-auto lg:max-h-none lg:rounded-none lg:border-t-0 lg:bg-transparent lg:shadow-none lg:backdrop-blur-none lg:transition-none
+            fixed inset-x-0 bottom-0 z-50 flex h-[min(92dvh,calc(100dvh-0.75rem))] min-h-0 flex-col overflow-hidden rounded-t-3xl border-t border-white/10 bg-slate-950/98 shadow-[0_-20px_60px_rgba(0,0,0,0.6)] backdrop-blur-2xl transition-transform duration-300 ease-out
+            lg:static lg:z-auto lg:h-full lg:max-h-none lg:rounded-none lg:border-t-0 lg:bg-transparent lg:shadow-none lg:backdrop-blur-none lg:transition-none
             ${showDrawer ? "translate-y-0" : "translate-y-full lg:translate-y-0"}
           `}
         >
@@ -389,17 +454,17 @@ function GuestRoomInner() {
               aria-label="Close drawer"
             />
           </div>
-          <div className="overflow-y-auto p-2 lg:p-4 lg:pl-8 lg:h-full" style={{ maxHeight: 'calc(85vh - 2rem)' }}>
-          <div className="flex min-h-full flex-col">
-            <div className="lg:sticky lg:top-0 z-20 border-b border-white/10 py-4 lg:py-5">
-              <div className="grid min-h-[148px] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.92fr)_140px] xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.9fr)_148px]">
-                <div className="flex h-full flex-col justify-start">
-                  <div className="min-h-[76px]">
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-6 lg:h-full lg:overflow-hidden lg:p-4 lg:pl-8">
+          <div className="flex min-h-full flex-col lg:h-full lg:overflow-hidden">
+            <div className="z-20 shrink-0 border-b border-white/10 pb-4 pt-3 lg:border-white/8 lg:pb-5 lg:pt-5">
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_auto] lg:grid-cols-[minmax(0,1fr)_minmax(180px,0.9fr)_clamp(112px,9vw,148px)] xl:grid-cols-[minmax(0,1fr)_minmax(220px,0.9fr)_148px]">
+                <div className="flex h-full min-w-0 flex-col justify-start">
+                  <div>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">
                       Room ID
                     </p>
-                    <div className="mt-3 flex min-w-0 items-center gap-2.5">
-                      <h2 className="font-mono text-4xl font-bold tracking-[0.22em] text-sky-300">
+                    <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2.5">
+                      <h2 className="min-w-0 break-all font-mono text-[clamp(2rem,8vw,2.6rem)] font-bold tracking-[0.18em] text-sky-300 lg:text-[clamp(2rem,3vw,2.35rem)]">
                         {roomCode}
                       </h2>
                       <button
@@ -413,38 +478,38 @@ function GuestRoomInner() {
                     </div>
                   </div>
 
-                  <div className="mt-4 grid grid-cols-2 gap-2">
+                  <div className="mt-4 flex w-full max-w-[12rem] flex-col gap-2">
                     <button
                       type="button"
-                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-semibold text-slate-200 transition"
+                      className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-semibold text-slate-200 transition"
                       aria-label="Connected guests"
                     >
                       <Users className="h-3.5 w-3.5" />
-                      {guestCount} connected
+                      <span className="truncate">{guestCount} connected</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => router.push("/")}
-                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-rose-400/20 bg-rose-500/10 px-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20"
+                      className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-rose-400/20 bg-rose-500/10 px-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20"
                       aria-label="Leave room"
                     >
                       <LogOut className="h-4 w-4" />
-                      Leave
+                      <span className="truncate">Leave</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="flex h-full flex-col justify-start">
-                  <div className="min-h-[76px]">
+                <div className="flex h-full min-w-0 flex-col justify-start">
+                  <div>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">
                       Room status
                     </p>
-                    <p className="mt-2 max-w-[16rem] text-[13px] leading-6 text-slate-400">
+                    <p className="mt-2 max-w-[18rem] text-[13px] leading-6 text-slate-400">
                       Choose whether guests join freely or need host approval.
                     </p>
                   </div>
 
-                  <div className="mt-4 inline-flex h-9 w-fit items-center rounded-md border border-white/10 bg-slate-950/40 p-1">
+                  <div className="mt-4 inline-flex h-9 w-fit max-w-full items-center rounded-md border border-white/10 bg-slate-950/40 p-1">
                     <button
                       type="button"
                       disabled
@@ -474,14 +539,16 @@ function GuestRoomInner() {
                   </div>
                 </div>
 
-                <div className="hidden lg:flex h-full items-start justify-end p-0">
-                  {joinUrl ? <CustomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400" />}
+                <div className="flex h-full items-start justify-end p-0">
+                  <div className="flex shrink-0 scale-[0.72] origin-top-right min-[420px]:scale-[0.78] sm:scale-[0.84] lg:scale-100">
+                    {joinUrl ? <CustomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400" />}
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col py-5 lg:py-6">
-              <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex min-h-0 flex-1 flex-col py-5 lg:overflow-hidden lg:py-0">
+              <div className="z-20 mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 lg:mt-0 lg:pt-4">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">
                     Queue
@@ -490,18 +557,29 @@ function GuestRoomInner() {
                     Up next
                   </h3>
                 </div>
-                <div className="text-sm font-medium text-slate-400">{renderedQueue.length} songs</div>
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-400">
+                  <span>{renderedQueue.length} songs</span>
+                  <span className={`h-2 w-2 rounded-full ${
+                    socketStatus === "connected"
+                      ? "bg-emerald-400"
+                      : socketStatus === "reconnecting" || socketStatus === "connecting"
+                        ? "bg-amber-300"
+                        : "bg-rose-400"
+                  }`} />
+                </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowSearch(true)}
-                disabled={joinState !== "approved"}
-                className="mb-4 inline-flex h-14 items-center justify-center gap-2 rounded-[22px] bg-emerald-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Plus className="h-5 w-5" />
-                Add songs
-              </button>
+              <div className="z-20 mb-4 shrink-0 bg-transparent py-1 lg:py-3">
+                <button
+                  type="button"
+                  onClick={() => setShowSearch(true)}
+                  disabled={joinState !== "approved"}
+                  className="inline-flex h-14 w-full items-center justify-center gap-2 rounded-[22px] bg-emerald-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
+                >
+                  <Plus className="h-5 w-5" />
+                  Add songs
+                </button>
+              </div>
 
               {error ? (
                 <div className="mb-4 rounded-[22px] border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
@@ -521,7 +599,7 @@ function GuestRoomInner() {
                 </div>
               ) : null}
 
-              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <div className="min-h-[12rem] flex-1 overflow-y-auto overscroll-contain pb-8 pr-1 lg:h-full lg:min-h-0">
                 {renderedQueue.length === 0 && !currentTrack ? (
                   <div className="flex min-h-[14rem] flex-col items-center justify-center px-4 text-center">
                     <ListMusic className="h-7 w-7 text-slate-600" />

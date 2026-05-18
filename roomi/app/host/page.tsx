@@ -11,28 +11,26 @@ import {
   LockOpen,
   LogOut,
   Music,
+  FastForward,
+  Pause,
+  Play,
   Plus,
   QrCode,
+  Rewind,
+  SkipBack,
+  SkipForward,
   UserCheck,
   UserRoundX,
   Users,
   X,
 } from "lucide-react";
-import { 
-  TbRewindBackward10, 
-  TbPlayerSkipBack, 
-  TbPlayerPlayFilled, 
-  TbPlayerPauseFilled, 
-  TbPlayerSkipForward, 
-  TbRewindForward10 
-} from "react-icons/tb";
 import { io, type Socket } from "socket.io-client";
 import qrcode from "qrcode";
 import { useRouter } from "next/navigation";
-import Player, { type PlayerControls, type SDKTrack } from "@/components/Player";
+import Player from "@/components/Player";
 import Queue from "@/components/Queue";
 import SearchModal from "@/components/SearchModal";
-import type { Track } from "@/lib/roomStore";
+import type { PlaybackState, Track } from "@/lib/roomStore";
 
 function CustomQRCode({ value }: { value: string }) {
   const qrData = useMemo(() => {
@@ -128,6 +126,7 @@ type UIQueueItem = {
 type RoomUpdatedPayload = {
   queue: UIQueueItem[];
   currentTrack: Track | null;
+  playback?: PlaybackState;
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   guestCount: number;
@@ -137,6 +136,12 @@ type RoomUpdatedPayload = {
 type RoomStatePayload = RoomUpdatedPayload & {
   roomCode?: string;
   hostId?: string;
+};
+
+type SocketAckPayload = {
+  ok?: boolean;
+  error?: string;
+  state?: RoomUpdatedPayload;
 };
 
 declare global {
@@ -160,13 +165,10 @@ const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
 export default function HostPage() {
   const router = useRouter();
   const socketRef = useRef<Socket | null>(null);
-  const playerRef = useRef<PlayerControls | null>(null);
   const skipGuardRef = useRef(false);
   const recordRef = useRef<HTMLDivElement | null>(null);
-  const currentTrackIdRef = useRef<string | null>(null);
   const progressMsRef = useRef(0);
   const lastSeekAtRef = useRef(0);
-  const idleRef = useRef(true);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -183,19 +185,18 @@ export default function HostPage() {
   const [roomAccess, setRoomAccessState] = useState<"open" | "locked">("open");
   const [showSearch, setShowSearch] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [sdkTrack, setSdkTrack] = useState<SDKTrack | null>(null);
   const [origin] = useState(() => (typeof window !== "undefined" ? window.location.origin : ""));
   const [progressMs, setProgressMs] = useState(0);
+  const [playbackState, setPlaybackState] = useState<PlaybackState | null>(null);
   const isDraggingRef = useRef(false);
 
   const [showGuests, setShowGuests] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
   const [accessUpdating, setAccessUpdating] = useState(false);
   const [approvingGuestId, setApprovingGuestId] = useState<string | null>(null);
+  const [socketStatus, setSocketStatus] = useState<"connecting" | "connected" | "reconnecting" | "offline">("connecting");
 
-  // Derive idle state: idle when no server-side track and not actively playing
-  const playerIdle = !currentTrack && status !== "Playing";
-  const displayTrack = playerIdle ? null : (sdkTrack ?? currentTrack);
+  const displayTrack = currentTrack;
   const durationMs = displayTrack?.durationMs ?? 1;
   const guestCount = useMemo(() => Object.keys(guests).length, [guests]);
   const joinUrl = useMemo(
@@ -204,7 +205,7 @@ export default function HostPage() {
   );
   const isPlaying = status === "Playing";
   const progress = durationMs > 0 ? progressMs / durationMs : 0;
-  const playedRatio = playerIdle ? 0 : Math.max(0, Math.min(1, progress));
+  const playedRatio = Math.max(0, Math.min(1, progress));
   const hasTrack = !!displayTrack;
 
   const visibleGuests = useMemo(
@@ -225,6 +226,14 @@ export default function HostPage() {
     if (!payload) return;
     setQueue(payload.queue ?? []);
     setCurrentTrack(payload.currentTrack ?? null);
+    if (payload.playback) {
+      setPlaybackState(payload.playback);
+      setStatus(payload.playback.isPlaying ? "Playing" : payload.playback.track ? "Paused" : "Waiting for songs...");
+    } else if (!payload.currentTrack) {
+      setPlaybackState(null);
+      progressMsRef.current = 0;
+      setProgressMs(0);
+    }
     setGuests(payload.guests ?? {});
     setPendingGuests(payload.pendingGuests ?? {});
     setRoomAccessState(payload.access ?? "open");
@@ -247,93 +256,43 @@ export default function HostPage() {
       setError(payload?.error ?? "Could not skip track");
       return;
     }
-
-    const nextTrack = payload?.currentTrack ?? null;
-    setCurrentTrack(nextTrack);
-
-    if (!nextTrack) {
-      // Queue is empty — transition to idle state
-      idleRef.current = true;
-      setSdkTrack(null);
-      setStatus("Waiting for songs...");
-      progressMsRef.current = 0;
-      setProgressMs(0);
-      currentTrackIdRef.current = null;
-      try { await playerRef.current?.pause(); } catch { /* ignore */ }
-    } else {
-      idleRef.current = false;
-    }
+    setCurrentTrack(payload?.currentTrack ?? null);
+    setPlaybackState(payload?.playback ?? null);
   }, [roomCode]);
-
-  const onTrackEnd = useCallback(() => {
-    fetchNextTrack().catch(() => setError("Could not advance queue"));
-  }, [fetchNextTrack]);
-
-  const handleSDKTrackChange = useCallback((track: SDKTrack | null) => {
-    // When idle, suppress stale SDK events reporting the old track.
-    // Only accept if it's a genuinely NEW track (different ID from what we last cleared).
-    if (idleRef.current) {
-      if (!track) return; // still no track — stay idle
-      // A new track has started playing — exit idle
-      idleRef.current = false;
-    }
-
-    const nextTrackId = track?.id ?? null;
-    if (currentTrackIdRef.current !== nextTrackId) {
-      currentTrackIdRef.current = nextTrackId;
-      progressMsRef.current = 0;
-      setProgressMs(0);
-    }
-    setSdkTrack(track);
-  }, []);
 
   const togglePlayPause = useCallback(async () => {
     if (!hasTrack) return;
-    if (status === "Playing") {
-      await playerRef.current?.pause();
-    } else {
-      await playerRef.current?.play();
+    const response = await fetch("/api/player/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomCode }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setError(payload?.error ?? "Could not toggle playback");
     }
-  }, [status, hasTrack]);
+  }, [hasTrack, roomCode]);
 
   useEffect(() => {
-    if (status !== "Playing") return;
+    if (!playbackState?.track) {
+      progressMsRef.current = 0;
+      return;
+    }
 
-    // Fast interval for smooth UI updates (10 FPS)
-    let lastTime = performance.now();
-    const tickInterval = setInterval(() => {
-      const now = performance.now();
-      const delta = now - lastTime;
-      lastTime = now;
-
-      if (!isDraggingRef.current) {
-        setProgressMs((prev) => {
-          const next = Math.min(durationMs, prev + delta);
-          progressMsRef.current = next;
-          return next;
-        });
-      }
-    }, 100);
-
-    // Slower interval to poll true state and sync
-    const syncInterval = setInterval(async () => {
+    const updateProgress = () => {
       if (isDraggingRef.current) return;
-      if (Date.now() - lastSeekAtRef.current < 1000) return;
-      
-      const state = await playerRef.current?.getCurrentState();
-      if (state && !state.paused) {
-        if (Math.abs(state.position - progressMsRef.current) > 500) {
-          progressMsRef.current = state.position;
-          setProgressMs(state.position);
-        }
-      }
-    }, 1000);
-
-    return () => {
-      clearInterval(tickInterval);
-      clearInterval(syncInterval);
+      const next = playbackState.isPlaying
+        ? playbackState.startedAtPosition + (Date.now() - playbackState.startedAtTimestamp)
+        : playbackState.pausedAtPosition;
+      const clamped = Math.max(0, Math.min(playbackState.duration, next));
+      progressMsRef.current = clamped;
+      setProgressMs(clamped);
     };
-  }, [durationMs, status]);
+
+    updateProgress();
+    const interval = window.setInterval(updateProgress, 500);
+    return () => window.clearInterval(interval);
+  }, [playbackState]);
 
   useEffect(() => {
     if (recordRef.current) {
@@ -350,7 +309,8 @@ export default function HostPage() {
       try {
         const tokenResponse = await fetch("/api/auth/token");
         if (!tokenResponse.ok) {
-          router.replace(tokenResponse.status === 403 ? "/?error=host-session-missing" : "/");
+          setError(tokenResponse.status === 403 ? "Session expired. Please reconnect Spotify." : "Could not load host session.");
+          setLoading(false);
           return;
         }
         const tokenPayload = await tokenResponse.json();
@@ -359,7 +319,8 @@ export default function HostPage() {
 
         const roomResponse = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`);
         if (!roomResponse.ok) {
-          router.replace("/?error=room-not-found");
+          setError("Room not found. Create a new room from the home page.");
+          setLoading(false);
           return;
         }
         const roomPayload = await roomResponse.json();
@@ -423,30 +384,60 @@ export default function HostPage() {
     });
     socketRef.current = socket;
     socket.on("connect", () => {
-      socket.emit("join-room", { roomCode, guestId: hostId, displayName: "Host" });
+      setSocketStatus("connected");
+      socket.emit("join-room", { roomCode, guestId: hostId, displayName: "Host" }, (ack: SocketAckPayload) => {
+        if (ack?.state) applyRoomState(ack.state);
+        if (ack?.error) setError(ack.error);
+      });
+      socket.emit("sync-room", {}, (ack: SocketAckPayload) => {
+        if (ack?.state) applyRoomState(ack.state);
+      });
+    });
+    socket.io.on("reconnect_attempt", () => setSocketStatus("reconnecting"));
+    socket.io.on("reconnect", () => {
+      setSocketStatus("connected");
+      void refreshRoomState();
+    });
+    socket.io.on("reconnect_error", () => setSocketStatus("reconnecting"));
+    socket.on("disconnect", () => setSocketStatus("offline"));
+    socket.on("connect_error", () => setSocketStatus("offline"));
+    socket.on("room-error", (payload: { error?: string }) => {
+      setError(payload?.error ?? "Socket room error");
+      void refreshRoomState();
+    });
+    socket.on("socket-stale", () => {
+      socket.emit("sync-room", {}, (ack: SocketAckPayload) => {
+        if (ack?.state) applyRoomState(ack.state);
+      });
       void refreshRoomState();
     });
     socket.on("room-updated", (payload: RoomUpdatedPayload) => {
       applyRoomState(payload);
     });
+    socket.on("playback:state", (payload: PlaybackState) => {
+      setPlaybackState(payload);
+      setCurrentTrack(payload.track);
+      setStatus(payload.isPlaying ? "Playing" : payload.track ? "Paused" : "Waiting for songs...");
+    });
+    socket.on("playback:started", (payload: PlaybackState) => {
+      setPlaybackState(payload);
+      setCurrentTrack(payload.track);
+      setStatus("Playing");
+    });
+    socket.on("playback:error", (payload: { error?: string }) => {
+      setError(payload?.error ?? "Playback error");
+    });
+    const pingInterval = window.setInterval(() => {
+      socket.emit("room-ping", {}, (ack: { ok?: boolean }) => {
+        if (!ack?.ok) void refreshRoomState();
+      });
+    }, 15000);
     return () => {
+      window.clearInterval(pingInterval);
       socket.disconnect();
       socketRef.current = null;
     };
   }, [applyRoomState, roomCode, hostId, refreshRoomState]);
-
-  // ── Client-side auto-play hook ──
-  // When the queue has songs but nothing is playing, auto-trigger playback.
-  // This catches cases where the server-side autoPlayTrack failed silently
-  // (e.g. guest-added song, token race, etc.)
-  useEffect(() => {
-    if (queue.length > 0 && !currentTrack && status !== "Playing") {
-      const timer = setTimeout(() => {
-        fetchNextTrack().catch(() => setError("Could not start playback"));
-      }, 500); // small delay to let server-side auto-play finish first
-      return () => clearTimeout(timer);
-    }
-  }, [queue, currentTrack, status, fetchNextTrack]);
 
   const handlePlayerReady = useCallback(
     async (deviceId: string) => {
@@ -469,7 +460,15 @@ export default function HostPage() {
     lastSeekAtRef.current = Date.now();
     progressMsRef.current = nextPosition;
     setProgressMs(nextPosition);
-    await playerRef.current?.seek(nextPosition);
+    const response = await fetch("/api/player/seek", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomCode, positionMs: nextPosition }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      setError(payload?.error ?? "Could not seek playback");
+    }
   };
 
   const shiftBy = async (deltaMs: number) => {
@@ -557,20 +556,7 @@ export default function HostPage() {
   return (
     <div className="roomi-bg h-screen overflow-hidden text-slate-100">
       <div className="hidden">
-        <Player
-          ref={playerRef}
-          accessToken={accessToken}
-          onReady={handlePlayerReady}
-          onTrackEnd={onTrackEnd}
-          onStatusChange={(s) => {
-            // When idle, suppress SDK status events (e.g. "Paused" from the stale track)
-            if (idleRef.current && s !== "Playing") return;
-            if (s === "Playing") idleRef.current = false;
-            setStatus(s);
-          }}
-          onTrackChange={handleSDKTrackChange}
-          onError={setError}
-        />
+        <Player accessToken={accessToken} onReady={handlePlayerReady} onTrackEnd={() => {}} onStatusChange={() => {}} onTrackChange={() => {}} onError={setError} />
       </div>
 
       <main className="mx-auto flex h-full max-w-[1600px] flex-col px-4 py-0 sm:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(420px,1fr)] lg:px-8 lg:py-0">
@@ -684,7 +670,7 @@ export default function HostPage() {
                   className="deck-btn disabled:opacity-30 disabled:cursor-not-allowed"
                   aria-label="Back 10 seconds"
                 >
-                  <TbRewindBackward10 className="h-7 w-7 opacity-85" />
+                  <Rewind className="h-6 w-6 opacity-85" />
                 </button>
                 <button
                   type="button"
@@ -693,7 +679,7 @@ export default function HostPage() {
                   className="deck-btn disabled:opacity-30 disabled:cursor-not-allowed"
                   aria-label="Restart track"
                 >
-                  <TbPlayerSkipBack className="h-5 w-5 opacity-85" />
+                  <SkipBack className="h-5 w-5 opacity-85" />
                 </button>
                 <button
                   type="button"
@@ -703,9 +689,9 @@ export default function HostPage() {
                   aria-label={isPlaying ? "Pause" : "Play"}
                 >
                   {isPlaying ? (
-                    <TbPlayerPauseFilled className="h-7 w-7" />
+                    <Pause className="h-7 w-7 fill-current" />
                   ) : (
-                    <TbPlayerPlayFilled className="ml-1 h-7 w-7" />
+                    <Play className="ml-1 h-7 w-7 fill-current" />
                   )}
                 </button>
                 <button
@@ -715,7 +701,7 @@ export default function HostPage() {
                   className="deck-btn disabled:opacity-30 disabled:cursor-not-allowed"
                   aria-label="Next track"
                 >
-                  <TbPlayerSkipForward className="h-5 w-5 opacity-85" />
+                  <SkipForward className="h-5 w-5 opacity-85" />
                 </button>
                 <button
                   type="button"
@@ -724,7 +710,7 @@ export default function HostPage() {
                   className="deck-btn disabled:opacity-30 disabled:cursor-not-allowed"
                   aria-label="Forward 10 seconds"
                 >
-                  <TbRewindForward10 className="h-7 w-7 opacity-85" />
+                  <FastForward className="h-6 w-6 opacity-85" />
                 </button>
               </div>
             </div>
@@ -760,8 +746,8 @@ export default function HostPage() {
         {/* ── Right column: desktop = inline, mobile = slide-up drawer ── */}
         <section
           className={`
-            fixed inset-x-0 bottom-0 z-50 max-h-[85vh] overflow-hidden rounded-t-3xl border-t border-white/10 bg-slate-950/98 shadow-[0_-20px_60px_rgba(0,0,0,0.6)] backdrop-blur-2xl transition-transform duration-300 ease-out
-            lg:static lg:z-auto lg:max-h-none lg:rounded-none lg:border-t-0 lg:bg-transparent lg:shadow-none lg:backdrop-blur-none lg:transition-none
+            fixed inset-x-0 bottom-0 z-50 flex h-[min(92dvh,calc(100dvh-0.75rem))] min-h-0 flex-col overflow-hidden rounded-t-3xl border-t border-white/10 bg-slate-950/98 shadow-[0_-20px_60px_rgba(0,0,0,0.6)] backdrop-blur-2xl transition-transform duration-300 ease-out
+            lg:static lg:z-auto lg:h-full lg:max-h-none lg:rounded-none lg:border-t-0 lg:bg-transparent lg:shadow-none lg:backdrop-blur-none lg:transition-none
             ${showDrawer ? "translate-y-0" : "translate-y-full lg:translate-y-0"}
           `}
         >
@@ -774,17 +760,17 @@ export default function HostPage() {
               aria-label="Close drawer"
             />
           </div>
-          <div className="overflow-y-auto p-2 lg:p-4 lg:pl-8 lg:h-full" style={{ maxHeight: 'calc(85vh - 2rem)' }}>
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="lg:sticky lg:top-0 z-20 border-b border-white/10 py-4 lg:py-5">
-              <div className="grid min-h-[148px] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.92fr)_140px] xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.9fr)_148px]">
-                <div className="flex h-full flex-col justify-start">
-                  <div className="min-h-[76px]">
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-6 lg:h-full lg:overflow-hidden lg:p-4 lg:pl-8">
+          <div className="flex min-h-full flex-col lg:h-full lg:overflow-hidden">
+            <div className="z-20 shrink-0 border-b border-white/10 pb-4 pt-3 lg:border-white/8 lg:pb-5 lg:pt-5">
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_auto] lg:grid-cols-[minmax(0,1fr)_minmax(180px,0.9fr)_clamp(112px,9vw,148px)] xl:grid-cols-[minmax(0,1fr)_minmax(220px,0.9fr)_148px]">
+                <div className="flex h-full min-w-0 flex-col justify-start">
+                  <div>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">
                       Room ID
                     </p>
-                    <div className="mt-3 flex min-w-0 items-center gap-2.5">
-                      <h2 className="font-mono text-4xl font-bold tracking-[0.22em] text-sky-300">
+                    <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2.5">
+                      <h2 className="min-w-0 break-all font-mono text-[clamp(2rem,8vw,2.6rem)] font-bold tracking-[0.18em] text-sky-300 lg:text-[clamp(2rem,3vw,2.35rem)]">
                         {roomCode}
                       </h2>
                       <button
@@ -798,40 +784,40 @@ export default function HostPage() {
                     </div>
                   </div>
 
-                  <div className="mt-4 grid grid-cols-2 gap-2">
+                  <div className="mt-4 flex w-full max-w-[12rem] flex-col gap-2">
                     <button 
                       type="button"
                       onClick={() => setShowGuests(true)}
-                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                      className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
                     >
                       <Users className="h-3.5 w-3.5" />
-                      {guestCount} connected
+                      <span className="truncate">{guestCount} connected</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => {
                         void endSession();
                       }}
-                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-rose-400/20 bg-rose-500/10 px-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20"
+                      className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-rose-400/20 bg-rose-500/10 px-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20"
                       aria-label="End session"
                     >
                       <LogOut className="h-4 w-4" />
-                      End session
+                      <span className="truncate">End session</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="flex h-full flex-col justify-start">
-                  <div className="min-h-[76px]">
+                <div className="flex h-full min-w-0 flex-col justify-start">
+                  <div>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">
                       Room status
                     </p>
-                    <p className="mt-2 max-w-[16rem] text-[13px] leading-6 text-slate-400">
+                    <p className="mt-2 max-w-[18rem] text-[13px] leading-6 text-slate-400">
                       Choose whether guests join freely or need host approval.
                     </p>
                   </div>
 
-                  <div className="mt-4 inline-flex h-9 w-fit items-center rounded-md border border-white/10 bg-slate-950/40 p-1">
+                  <div className="mt-4 inline-flex h-9 w-fit max-w-full items-center rounded-md border border-white/10 bg-slate-950/40 p-1">
                     <button
                       type="button"
                       disabled={accessUpdating}
@@ -861,14 +847,16 @@ export default function HostPage() {
                   </div>
                 </div>
 
-                <div className="hidden lg:flex h-full items-start justify-end p-0">
-                  {joinUrl ? <CustomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400" />}
+                <div className="flex h-full items-start justify-end p-0">
+                  <div className="flex shrink-0 scale-[0.72] origin-top-right min-[420px]:scale-[0.78] sm:scale-[0.84] lg:scale-100">
+                    {joinUrl ? <CustomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400" />}
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto py-5 lg:py-6">
-            <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex min-h-0 flex-1 flex-col py-5 lg:overflow-hidden lg:py-0">
+            <div className="z-10 mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 lg:mt-0 lg:pt-4">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">
                   Queue
@@ -877,17 +865,28 @@ export default function HostPage() {
                   Up next
                 </h3>
               </div>
-              <div className="text-sm font-medium text-slate-400">{queue.length} songs</div>
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-400">
+                <span>{queue.length} songs</span>
+                <span className={`h-2 w-2 rounded-full ${
+                  socketStatus === "connected"
+                    ? "bg-emerald-400"
+                    : socketStatus === "reconnecting" || socketStatus === "connecting"
+                      ? "bg-amber-300"
+                      : "bg-rose-400"
+                }`} />
+              </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowSearch(true)}
-              className="mb-4 inline-flex h-14 items-center justify-center gap-2 rounded-[22px] bg-emerald-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
-            >
-              <Plus className="h-5 w-5" />
-              Add songs
-            </button>
+            <div className="z-10 mb-4 shrink-0 bg-transparent py-1 lg:py-3">
+              <button
+                type="button"
+                onClick={() => setShowSearch(true)}
+                className="inline-flex h-14 w-full items-center justify-center gap-2 rounded-[22px] bg-emerald-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 lg:w-auto"
+              >
+                <Plus className="h-5 w-5" />
+                Add songs
+              </button>
+            </div>
 
             {error ? (
               <div className="mb-4 rounded-[22px] border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
@@ -895,7 +894,7 @@ export default function HostPage() {
               </div>
             ) : null}
 
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <div className="min-h-[12rem] flex-1 overflow-y-auto overscroll-contain pb-8 pr-1 lg:h-full lg:min-h-0">
               {queue.length === 0 && !currentTrack ? (
                 <div className="flex min-h-[14rem] flex-col items-center justify-center px-4 text-center">
                   <ListMusic className="h-7 w-7 text-slate-600" />

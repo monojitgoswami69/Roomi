@@ -8,6 +8,7 @@ export interface SessionData {
   refreshToken?: string;
   accountName?: string;
   isHost?: boolean;
+  flashError?: string;
 }
 
 export const sessionOptions: SessionOptions = {

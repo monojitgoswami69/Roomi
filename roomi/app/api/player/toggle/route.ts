@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { providerGetRoom, providerPlayTrack } from "@/lib/socketProvider";
+import { providerGetRoom, providerTogglePlayback } from "@/lib/socketProvider";
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
   const roomCode = typeof body?.roomCode === "string" ? body.roomCode.trim().toUpperCase() : "";
-  const uri = typeof body?.uri === "string" ? body.uri.trim() : "";
 
-  if (!roomCode || !uri) {
-    return NextResponse.json({ error: "roomCode and uri are required" }, { status: 400 });
+  if (!roomCode) {
+    return NextResponse.json({ error: "roomCode is required" }, { status: 400 });
   }
 
   const room = await providerGetRoom(roomCode);
@@ -16,11 +15,11 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await providerPlayTrack(room.roomCode, uri);
+    const result = await providerTogglePlayback(room.roomCode);
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to play track" },
+      { error: error instanceof Error ? error.message : "Failed to toggle playback" },
       { status: 500 },
     );
   }

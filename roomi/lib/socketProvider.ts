@@ -1,4 +1,4 @@
-import type { PublicRoomState, Room, Track } from "@/lib/roomStore";
+import type { PlaybackState, PublicRoomState, Room, Track } from "@/lib/roomStore";
 
 const providerUrl = process.env.SOCKET_PROVIDER_URL?.replace(/\/$/, "");
 
@@ -146,6 +146,32 @@ export async function providerRemoveTracks(roomCode: string, trackIds: string[])
   });
 }
 
+export async function providerPlayNext(roomCode: string): Promise<{ currentTrack: Track | null; playback?: PlaybackState }> {
+  return providerRequest(`/api/rooms/${roomCode}/playback/next`, {
+    method: "POST",
+  });
+}
+
+export async function providerPlayTrack(roomCode: string, uri: string): Promise<{ currentTrack: Track | null; playback?: PlaybackState }> {
+  return providerRequest(`/api/rooms/${roomCode}/playback/play`, {
+    method: "POST",
+    body: { uri },
+  });
+}
+
+export async function providerTogglePlayback(roomCode: string): Promise<{ currentTrack: Track | null; playback?: PlaybackState }> {
+  return providerRequest(`/api/rooms/${roomCode}/playback/toggle`, {
+    method: "POST",
+  });
+}
+
+export async function providerSeek(roomCode: string, positionMs: number): Promise<{ playback: PlaybackState }> {
+  return providerRequest(`/api/rooms/${roomCode}/playback/seek`, {
+    method: "POST",
+    body: { positionMs },
+  });
+}
+
 export function providerRoomToLegacyRoom(room: ProviderRoomState): Room {
   return {
     code: room.roomCode,
@@ -156,6 +182,7 @@ export function providerRoomToLegacyRoom(room: ProviderRoomState): Room {
     access: room.access,
     queue: room.queue,
     currentTrack: room.currentTrack,
+    playback: room.playback,
     guests: room.guests,
     pendingGuests: room.pendingGuests,
     createdAt: Date.now(),

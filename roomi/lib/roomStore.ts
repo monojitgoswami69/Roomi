@@ -21,6 +21,15 @@ export type PublicQueueItem = QueueItem & {
   voteCount: number;
 };
 
+export type PlaybackState = {
+  isPlaying: boolean;
+  startedAtTimestamp: number;
+  startedAtPosition: number;
+  pausedAtPosition: number;
+  duration: number;
+  track: Track | null;
+};
+
 export interface Room {
   code: string;
   hostId: string;
@@ -30,6 +39,7 @@ export interface Room {
   access: "open" | "locked";
   queue: QueueItem[];
   currentTrack: Track | null;
+  playback?: PlaybackState;
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   createdAt: number;
@@ -39,6 +49,7 @@ export interface Room {
 export type PublicRoomState = {
   queue: PublicQueueItem[];
   currentTrack: Track | null;
+  playback?: PlaybackState;
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   guestCount: number;
@@ -76,25 +87,6 @@ function getQueueOrder(code: string): Map<string, number> {
   return queueAddedAt.get(code)!;
 }
 
-function sortQueue(code: string): void {
-  const room = rooms.get(code);
-
-  if (!room) {
-    return;
-  }
-
-  const queueOrderMap = getQueueOrder(code);
-  room.queue.sort((a, b) => {
-    if (a.score !== b.score) {
-      return b.score - a.score;
-    }
-
-    const aAddedAt = queueOrderMap.get(a.track.id) ?? Number.MAX_SAFE_INTEGER;
-    const bAddedAt = queueOrderMap.get(b.track.id) ?? Number.MAX_SAFE_INTEGER;
-    return aAddedAt - bAddedAt;
-  });
-}
-
 /** Strip voter map before sending to clients. Include the requesting user's own vote. */
 function toPublicQueueItem(item: QueueItem, viewerId?: string): PublicQueueItem {
   return {
@@ -112,6 +104,7 @@ function buildPublicRoomState(room: Room, viewerId?: string): PublicRoomState {
   return {
     queue: room.queue.map((item) => toPublicQueueItem(item, viewerId)),
     currentTrack: room.currentTrack,
+    playback: room.playback,
     guests: room.guests,
     pendingGuests: room.pendingGuests,
     guestCount: Object.keys(room.guests).length,

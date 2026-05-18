@@ -1,8 +1,17 @@
-import axios from "axios";
 import type { Track } from "@/lib/roomStore";
 
 const SPOTIFY_ACCOUNTS_API = "https://accounts.spotify.com/api/token";
 const SPOTIFY_WEB_API_BASE = "https://api.spotify.com/v1";
+
+export class SpotifyApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "SpotifyApiError";
+    this.status = status;
+  }
+}
 
 function getAuthHeader(): string {
   const clientId = process.env.SPOTIFY_CLIENT_ID ?? "";
@@ -17,18 +26,50 @@ export async function getAccessToken(refreshToken: string): Promise<string> {
     refresh_token: refreshToken,
   });
 
-  const response = await axios.post<{ access_token: string }>(SPOTIFY_ACCOUNTS_API, body, {
+  const response = await fetch(SPOTIFY_ACCOUNTS_API, {
+    method: "POST",
     headers: {
       Authorization: getAuthHeader(),
       "Content-Type": "application/x-www-form-urlencoded",
     },
+    body,
   });
 
-  return response.data.access_token;
+  if (!response.ok) {
+    throw new SpotifyApiError("Spotify token refresh failed", response.status);
+  }
+
+  const payload = (await response.json()) as { access_token: string };
+  return payload.access_token;
+}
+
+async function spotifyFetch<T>(path: string, accessToken: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${SPOTIFY_WEB_API_BASE}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(init.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new SpotifyApiError(`Spotify request failed: ${response.status}`, response.status);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json()) as T;
 }
 
 export async function searchTracks(accessToken: string, query: string, limit = 10): Promise<Track[]> {
-  const response = await axios.get<{
+  const params = new URLSearchParams({
+    q: query,
+    type: "track",
+    limit: String(limit),
+  });
+  const response = await spotifyFetch<{
     tracks: {
       items: Array<{
         id: string;
@@ -39,18 +80,9 @@ export async function searchTracks(accessToken: string, query: string, limit = 1
         album: { images: Array<{ url: string }> };
       }>;
     };
-  }>(`${SPOTIFY_WEB_API_BASE}/search`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    params: {
-      q: query,
-      type: "track",
-      limit,
-    },
-  });
+  }>(`/search?${params}`, accessToken);
 
-  return response.data.tracks.items.map((track) => ({
+  return response.tracks.items.map((track) => ({
     id: track.id,
     uri: track.uri,
     title: track.name,
@@ -67,7 +99,14 @@ export async function getRecommendations(
   targetFeatures: Record<string, number> = {},
   limit = 12,
 ): Promise<Track[]> {
-  const response = await axios.get<{
+  const params = new URLSearchParams({
+    seed_genres: seedGenres.join(","),
+    limit: String(limit),
+  });
+  for (const [key, value] of Object.entries(targetFeatures)) {
+    params.set(key, String(value));
+  }
+  const response = await spotifyFetch<{
     tracks: Array<{
       id: string;
       uri: string;
@@ -76,18 +115,9 @@ export async function getRecommendations(
       artists: Array<{ name: string }>;
       album: { images: Array<{ url: string }> };
     }>;
-  }>(`${SPOTIFY_WEB_API_BASE}/recommendations`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    params: {
-      seed_genres: seedGenres.join(","),
-      limit,
-      ...targetFeatures,
-    },
-  });
+  }>(`/recommendations?${params}`, accessToken);
 
-  return response.data.tracks.map((track) => ({
+  return response.tracks.map((track) => ({
     id: track.id,
     uri: track.uri,
     title: track.name,
@@ -99,15 +129,13 @@ export async function getRecommendations(
 }
 
 export async function activatePlayerDevice(accessToken: string, deviceId: string): Promise<void> {
-  await axios.put(
-    `${SPOTIFY_WEB_API_BASE}/me/player`,
-    { device_ids: [deviceId], play: false },
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+  await spotifyFetch<void>("/me/player", accessToken, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
     },
-  );
+    body: JSON.stringify({ device_ids: [deviceId], play: false }),
+  });
 }
 
 function wait(ms: number): Promise<void> {
@@ -122,25 +150,20 @@ export async function playTrack(
 ): Promise<void> {
   const startPlayback = async (token: string) => {
     await activatePlayerDevice(token, deviceId);
-    await axios.put(
-      `${SPOTIFY_WEB_API_BASE}/me/player/play`,
-      { uris: [uri] },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        params: {
-          device_id: deviceId,
-        },
+    await spotifyFetch<void>(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, token, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify({ uris: [uri] }),
+    });
   };
 
   const tryWithRetry = async (token: string): Promise<void> => {
     try {
       await startPlayback(token);
     } catch (error) {
-      if (axios.isAxiosError(error) && [404, 429, 502, 503].includes(error.response?.status ?? 0)) {
+      if (error instanceof SpotifyApiError && [404, 429, 502, 503].includes(error.status)) {
         await wait(300);
         await startPlayback(token);
         return;
@@ -154,8 +177,8 @@ export async function playTrack(
   } catch (error) {
     // Auto-refresh on 401 if refresh credentials are provided
     if (
-      axios.isAxiosError(error) &&
-      error.response?.status === 401 &&
+      error instanceof SpotifyApiError &&
+      error.status === 401 &&
       options?.refreshToken
     ) {
       const freshToken = await getAccessToken(options.refreshToken);
@@ -168,13 +191,9 @@ export async function playTrack(
 }
 
 export async function getSpotifyProfile(accessToken: string): Promise<{ displayName: string }> {
-  const response = await axios.get<{ display_name?: string; id?: string }>(`${SPOTIFY_WEB_API_BASE}/me`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+  const response = await spotifyFetch<{ display_name?: string; id?: string }>("/me", accessToken);
 
   return {
-    displayName: response.data.display_name?.trim() || response.data.id || "Account",
+    displayName: response.display_name?.trim() || response.id || "Account",
   };
 }
