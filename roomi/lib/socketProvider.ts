@@ -34,7 +34,9 @@ async function providerRequest<T>(path: string, init: ProviderRequestInit = {}):
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(payload?.error ?? `Socket provider request failed: ${response.status}`);
+    const error = new Error(payload?.error ?? `Socket provider request failed: ${response.status}`);
+    (error as Error & { status?: number }).status = response.status;
+    throw error;
   }
 
   return payload as T;
@@ -129,7 +131,7 @@ export async function providerAddTracks(
   roomCode: string,
   guestId: string,
   tracks: Track[],
-): Promise<{ addedCount: number; state?: ProviderRoomState }> {
+): Promise<{ addedCount: number; autoPlayTrack?: Track | null; state?: ProviderRoomState }> {
   return providerRequest(`/api/rooms/${roomCode}/queue/batch`, {
     method: "POST",
     body: { guestId, tracks },
@@ -163,23 +165,13 @@ export async function providerPlayNext(roomCode: string): Promise<{ currentTrack
   });
 }
 
-export async function providerPlayTrack(roomCode: string, uri: string): Promise<{ currentTrack: Track | null; playback?: PlaybackState }> {
-  return providerRequest(`/api/rooms/${roomCode}/playback/play`, {
+export async function providerPublishPlaybackState(
+  roomCode: string,
+  playback: PlaybackState,
+): Promise<{ playback: PlaybackState }> {
+  return providerRequest(`/api/rooms/${roomCode}/playback/state`, {
     method: "POST",
-    body: { uri },
-  });
-}
-
-export async function providerTogglePlayback(roomCode: string): Promise<{ currentTrack: Track | null; playback?: PlaybackState }> {
-  return providerRequest(`/api/rooms/${roomCode}/playback/toggle`, {
-    method: "POST",
-  });
-}
-
-export async function providerSeek(roomCode: string, positionMs: number): Promise<{ playback: PlaybackState }> {
-  return providerRequest(`/api/rooms/${roomCode}/playback/seek`, {
-    method: "POST",
-    body: { positionMs },
+    body: { playback },
   });
 }
 

@@ -27,10 +27,30 @@ import {
 import { io, type Socket } from "socket.io-client";
 import qrcode from "qrcode";
 import { useRouter } from "next/navigation";
-import Player from "@/components/Player";
+import Player, { type PlayerControls, type SDKTrack } from "@/components/Player";
 import Queue from "@/components/Queue";
 import SearchModal from "@/components/SearchModal";
 import type { PlaybackState, Track } from "@/lib/roomStore";
+
+type SpotifyPlaybackSnapshot = {
+  paused: boolean;
+  position: number;
+  duration: number;
+  track_window: {
+    current_track: {
+      uri: string;
+      id: string;
+      name: string;
+      duration_ms: number;
+      artists: Array<{ name: string; uri: string }>;
+      album: {
+        name: string;
+        uri: string;
+        images: Array<{ url: string; height: number; width: number }>;
+      };
+    } | null;
+  };
+};
 
 function CustomQRCode({ value }: { value: string }) {
   const qrData = useMemo(() => {
@@ -160,15 +180,27 @@ function progressFillGradient() {
   return "linear-gradient(90deg, #38BDF8 0%, #60A5FA 100%)";
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
 
 export default function HostPage() {
   const router = useRouter();
   const socketRef = useRef<Socket | null>(null);
+  const playerRef = useRef<PlayerControls | null>(null);
   const skipGuardRef = useRef(false);
+  const hostActionRef = useRef(false);
+  const expectedPlaybackUriRef = useRef("");
+  const expectedTrackRef = useRef<Track | null>(null);
+  const lastPlaybackCommandUriRef = useRef("");
+  const lastPublishedSignatureRef = useRef("");
   const recordRef = useRef<HTMLDivElement | null>(null);
   const progressMsRef = useRef(0);
-  const lastSeekAtRef = useRef(0);
+  const deviceIdRef = useRef("");
+  const queueRef = useRef<UIQueueItem[]>([]);
+  const currentTrackRef = useRef<Track | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -178,6 +210,7 @@ export default function HostPage() {
   const [accessToken, setAccessToken] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [hostId, setHostId] = useState("");
+  const [deviceId, setDeviceId] = useState("");
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [queue, setQueue] = useState<UIQueueItem[]>([]);
   const [guests, setGuests] = useState<Record<string, string>>({});
@@ -208,6 +241,63 @@ export default function HostPage() {
   const playedRatio = Math.max(0, Math.min(1, progress));
   const hasTrack = !!displayTrack;
 
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
+  const publishPlaybackState = useCallback(async (playback: PlaybackState) => {
+    if (!roomCode) return;
+    const signature = JSON.stringify({
+      id: playback.track?.id ?? "",
+      isPlaying: playback.isPlaying,
+      startedAtPosition: Math.floor(playback.startedAtPosition / 500) * 500,
+      pausedAtPosition: Math.floor(playback.pausedAtPosition / 500) * 500,
+    });
+    if (signature === lastPublishedSignatureRef.current) return;
+    try {
+      const response = await fetch("/api/player/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomCode, playback }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error ?? `Could not publish playback state (${response.status})`);
+      }
+      lastPublishedSignatureRef.current = signature;
+    } catch {
+      lastPublishedSignatureRef.current = "";
+    }
+  }, [roomCode]);
+
+  const makePlaybackState = useCallback((track: Track | null, positionMs: number, isPlaying: boolean): PlaybackState => {
+    const clamped = Math.max(0, Math.min(track?.durationMs ?? 0, positionMs));
+    return {
+      isPlaying: Boolean(track && isPlaying),
+      startedAtTimestamp: Date.now(),
+      startedAtPosition: clamped,
+      pausedAtPosition: clamped,
+      duration: track?.durationMs ?? 0,
+      track,
+    };
+  }, []);
+
+  const applyPlaybackState = useCallback((playback: PlaybackState, shouldPublish = true) => {
+    setPlaybackState(playback);
+    setCurrentTrack(playback.track);
+    setStatus(playback.isPlaying ? "Playing" : playback.track ? "Paused" : "Waiting for songs...");
+    const position = playback.isPlaying ? playback.startedAtPosition : playback.pausedAtPosition;
+    progressMsRef.current = Math.max(0, Math.min(playback.duration, position));
+    setProgressMs(progressMsRef.current);
+    if (shouldPublish) {
+      void publishPlaybackState(playback);
+    }
+  }, [publishPlaybackState]);
+
   const visibleGuests = useMemo(
     () =>
       Object.entries(guests).filter(([guestId]) => guestId !== hostId).map(([id, name]) => ({
@@ -224,12 +314,28 @@ export default function HostPage() {
 
   const applyRoomState = useCallback((payload: RoomUpdatedPayload | RoomStatePayload | null | undefined) => {
     if (!payload) return;
+    const expectedUri = expectedPlaybackUriRef.current;
+    const payloadTrackUri = payload.playback?.track?.uri ?? payload.currentTrack?.uri ?? "";
+    const queueIsEmpty = (payload.queue ?? []).length === 0;
+    const hasPayloadTrack = Boolean(payload.currentTrack || payload.playback?.track);
+    const isIdleSnapshot = queueIsEmpty && !hasPayloadTrack;
     setQueue(payload.queue ?? []);
-    setCurrentTrack(payload.currentTrack ?? null);
-    if (payload.playback) {
-      setPlaybackState(payload.playback);
-      setStatus(payload.playback.isPlaying ? "Playing" : payload.playback.track ? "Paused" : "Waiting for songs...");
-    } else if (!payload.currentTrack) {
+    if (isIdleSnapshot && !expectedUri) {
+      setCurrentTrack(null);
+      setPlaybackState(null);
+      progressMsRef.current = 0;
+      setProgressMs(0);
+      setGuests(payload.guests ?? {});
+      setPendingGuests(payload.pendingGuests ?? {});
+      setRoomAccessState(payload.access ?? "open");
+      return;
+    }
+    if (!expectedUri || payloadTrackUri === expectedUri) {
+      setCurrentTrack(payload.currentTrack ?? null);
+    }
+    if (payload.playback && (!expectedUri || payload.playback.track?.uri === expectedUri)) {
+      applyPlaybackState(payload.playback, false);
+    } else if (!payload.currentTrack && !expectedUri) {
       setPlaybackState(null);
       progressMsRef.current = 0;
       setProgressMs(0);
@@ -237,7 +343,78 @@ export default function HostPage() {
     setGuests(payload.guests ?? {});
     setPendingGuests(payload.pendingGuests ?? {});
     setRoomAccessState(payload.access ?? "open");
-  }, []);
+  }, [applyPlaybackState]);
+
+  const waitForConfirmedPlayback = useCallback(async (track: Track, fallbackPositionMs: number) => {
+    for (let attempt = 0; attempt < 18; attempt += 1) {
+      const snapshot = await playerRef.current?.getCurrentState().catch(() => null);
+      const sdkTrack = snapshot?.track_window.current_track ?? null;
+      if (sdkTrack?.uri === track.uri) {
+        const confirmedPlayback = makePlaybackState(track, snapshot?.position ?? fallbackPositionMs, !snapshot?.paused);
+        expectedPlaybackUriRef.current = "";
+        expectedTrackRef.current = null;
+        applyPlaybackState(confirmedPlayback, true);
+        return true;
+      }
+      await wait(150);
+    }
+    return false;
+  }, [applyPlaybackState, makePlaybackState]);
+
+  const startTrack = useCallback(async (track: Track | null, positionMs = 0) => {
+    if (!track) {
+      expectedPlaybackUriRef.current = "";
+      expectedTrackRef.current = null;
+      lastPlaybackCommandUriRef.current = "";
+      await playerRef.current?.clearPlayback().catch(() => undefined);
+      const idlePlayback = makePlaybackState(null, 0, false);
+      applyPlaybackState(idlePlayback);
+      return;
+    }
+    // Guard against duplicate concurrent loads of the same URI.
+    // When a track ends, the socket "room-updated" event and the fetchNextTrack
+    // HTTP response can both trigger startTrack(sameURI) at roughly the same
+    // moment. Both refs are set synchronously below, so once one caller has
+    // entered, any concurrent caller for the same URI will bail out here.
+    if (
+      lastPlaybackCommandUriRef.current === track.uri &&
+      expectedPlaybackUriRef.current === track.uri
+    ) {
+      return;
+    }
+    expectedPlaybackUriRef.current = track.uri;
+    expectedTrackRef.current = track;
+    lastPlaybackCommandUriRef.current = track.uri;
+    hostActionRef.current = true;
+    setError("");
+    const loadingPlayback = makePlaybackState(track, positionMs, false);
+    applyPlaybackState(loadingPlayback, true);
+    try {
+      if (!playerRef.current) {
+        throw new Error("Spotify player is not ready yet");
+      }
+      await playerRef.current.clearPlayback();
+      await playerRef.current.playUri(track.uri, positionMs);
+      let confirmed = await waitForConfirmedPlayback(track, positionMs);
+      if (!confirmed) {
+        await playerRef.current.playUri(track.uri, positionMs);
+        confirmed = await waitForConfirmedPlayback(track, positionMs);
+      }
+      if (!confirmed) {
+        throw new Error("Spotify did not switch to the selected queue track");
+      }
+    } catch (error) {
+      expectedPlaybackUriRef.current = "";
+      expectedTrackRef.current = null;
+      const pausedPlayback = makePlaybackState(track, positionMs, false);
+      applyPlaybackState(pausedPlayback, true);
+      setError(error instanceof Error ? error.message : "Could not start Spotify playback");
+    } finally {
+      window.setTimeout(() => {
+        hostActionRef.current = false;
+      }, 500);
+    }
+  }, [applyPlaybackState, makePlaybackState, waitForConfirmedPlayback]);
 
   const fetchNextTrack = useCallback(async () => {
     if (!roomCode || skipGuardRef.current) return;
@@ -256,22 +433,60 @@ export default function HostPage() {
       setError(payload?.error ?? "Could not skip track");
       return;
     }
-    setCurrentTrack(payload?.currentTrack ?? null);
-    setPlaybackState(payload?.playback ?? null);
-  }, [roomCode]);
+    await startTrack(payload?.currentTrack ?? null, 0);
+  }, [roomCode, startTrack]);
+
+  const handleUnexpectedSpotifyTrack = useCallback((sdkTrackUri: string) => {
+    if (!sdkTrackUri) return;
+    const expectedUri = expectedPlaybackUriRef.current;
+    const roomiTrack = currentTrackRef.current;
+
+    if (expectedUri === sdkTrackUri || roomiTrack?.uri === sdkTrackUri) {
+      return;
+    }
+
+    if (expectedUri || hostActionRef.current) {
+      return;
+    }
+
+    // Spotify Connect can surface old internal queue entries. Roomi is the
+    // authoritative queue, so stop the ghost track before it can leak into UI.
+    void playerRef.current?.pause().catch(() => undefined);
+    if (queueRef.current.length > 0) {
+      void fetchNextTrack();
+    } else {
+      void startTrack(null);
+    }
+  }, [fetchNextTrack, startTrack]);
 
   const togglePlayPause = useCallback(async () => {
     if (!hasTrack) return;
-    const response = await fetch("/api/player/toggle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomCode }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      setError(payload?.error ?? "Could not toggle playback");
+    try {
+      if (!playerRef.current) {
+        throw new Error("Spotify player is not ready yet");
+      }
+      const track = currentTrackRef.current;
+      if (!track) {
+        return;
+      }
+      const position = progressMsRef.current;
+      if (isPlaying) {
+        await playerRef.current.pause();
+        applyPlaybackState(makePlaybackState(track, position, false), true);
+      } else {
+        try {
+          await playerRef.current.play();
+          applyPlaybackState(makePlaybackState(track, position, true), true);
+        } catch {
+          // SDK couldn't resume (track unloaded, device transferred, etc.) —
+          // fall back to a full reload from the last known position.
+          await startTrack(track, position);
+        }
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not toggle playback");
     }
-  }, [hasTrack, roomCode]);
+  }, [applyPlaybackState, hasTrack, isPlaying, makePlaybackState, startTrack]);
 
   useEffect(() => {
     if (!playbackState?.track) {
@@ -319,25 +534,8 @@ export default function HostPage() {
 
         const roomResponse = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`);
         if (!roomResponse.ok) {
-          setError("Realtime service is recovering your room...");
-          const recreateResponse = await fetch("/api/room/create", { method: "POST" });
-          if (!recreateResponse.ok) {
-            setError("Room not found. Create a new room from the home page.");
-            setLoading(false);
-            return;
-          }
-          const retryRoomResponse = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`);
-          if (!retryRoomResponse.ok) {
-            setError("Room not found. Create a new room from the home page.");
-            setLoading(false);
-            return;
-          }
-          const retryRoomPayload = await retryRoomResponse.json();
-          if (cancelled) return;
-          setError("");
-          setRoomCode(retryRoomPayload.roomCode ?? "");
-          setHostId(retryRoomPayload.hostId ?? "");
-          applyRoomState(retryRoomPayload);
+          setError("Room not found. Create a new room from the home page.");
+          setLoading(false);
           return;
         }
         const roomPayload = await roomResponse.json();
@@ -382,26 +580,13 @@ export default function HostPage() {
     if (!roomCode) return;
     try {
       const response = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`, { cache: "no-store" });
-      if (response.status === 404) {
-        setError("Realtime service is recovering your room...");
-        const recreateResponse = await fetch("/api/room/create", { method: "POST" });
-        if (!recreateResponse.ok) return;
-        const retryRoomResponse = await fetch(`/api/room/info?viewerId=${encodeURIComponent("host")}`, { cache: "no-store" });
-        if (!retryRoomResponse.ok) return;
-        const retryRoomPayload = await retryRoomResponse.json();
-        setError("");
-        applyRoomState(retryRoomPayload);
-        setRoomCode(retryRoomPayload.roomCode ?? roomCode);
-        setHostId(retryRoomPayload.hostId ?? hostId);
-        return;
-      }
       if (!response.ok) return;
       const payload = await response.json();
       applyRoomState(payload);
     } catch {
       // keep socket as the primary transport
     }
-  }, [applyRoomState, hostId, roomCode]);
+  }, [applyRoomState, roomCode]);
 
   useEffect(() => {
     if (!roomCode || !hostId) return;
@@ -445,14 +630,11 @@ export default function HostPage() {
       applyRoomState(payload);
     });
     socket.on("playback:state", (payload: PlaybackState) => {
-      setPlaybackState(payload);
-      setCurrentTrack(payload.track);
-      setStatus(payload.isPlaying ? "Playing" : payload.track ? "Paused" : "Waiting for songs...");
-    });
-    socket.on("playback:started", (payload: PlaybackState) => {
-      setPlaybackState(payload);
-      setCurrentTrack(payload.track);
-      setStatus("Playing");
+      const expectedUri = expectedPlaybackUriRef.current;
+      if (expectedUri && payload.track?.uri !== expectedUri) {
+        return;
+      }
+      applyPlaybackState(payload, false);
     });
     socket.on("playback:error", (payload: { error?: string }) => {
       setError(payload?.error ?? "Playback error");
@@ -467,37 +649,161 @@ export default function HostPage() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [applyRoomState, roomCode, hostId, refreshRoomState]);
+  }, [applyPlaybackState, applyRoomState, roomCode, hostId, refreshRoomState]);
 
   const handlePlayerReady = useCallback(
     async (deviceId: string) => {
       window.roomiDeviceId = deviceId;
+      deviceIdRef.current = deviceId;
+      setDeviceId(deviceId);
       const response = await fetch("/api/room/setDevice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ roomCode, deviceId }),
       });
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
         setError(payload?.error ?? "Could not set device");
+        return;
       }
+      setError("");
+      await playerRef.current?.setVolume(1).catch(() => undefined);
     },
     [roomCode],
   );
 
+  useEffect(() => {
+    if (!roomCode || !deviceId || currentTrack || queue.length === 0 || loading) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void fetchNextTrack();
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [currentTrack, deviceId, fetchNextTrack, loading, queue.length, roomCode]);
+
+  useEffect(() => {
+    if (!roomCode || !deviceId || !currentTrack || loading) {
+      return;
+    }
+    if (expectedPlaybackUriRef.current === currentTrack.uri) {
+      return;
+    }
+    if (lastPlaybackCommandUriRef.current === currentTrack.uri) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void startTrack(currentTrack, 0);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [currentTrack, deviceId, loading, playbackState, roomCode, startTrack]);
+
+  useEffect(() => {
+    if (!deviceId || loading || currentTrack || queue.length > 0) {
+      return;
+    }
+    expectedPlaybackUriRef.current = "";
+    expectedTrackRef.current = null;
+    const timeoutId = window.setTimeout(() => {
+      void playerRef.current?.clearPlayback().catch(() => undefined);
+      applyPlaybackState(makePlaybackState(null, 0, false), true);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [applyPlaybackState, currentTrack, deviceId, loading, makePlaybackState, queue.length]);
+
+  const handleSdkStatusChange = useCallback((nextStatus: "Playing" | "Paused" | "Waiting for songs...") => {
+    if (!hostActionRef.current && !expectedPlaybackUriRef.current) {
+      setStatus(nextStatus);
+    }
+  }, []);
+
+  const handleSdkTrackChange = useCallback((sdkTrack: SDKTrack | null) => {
+    if (!sdkTrack) {
+      return;
+    }
+    handleUnexpectedSpotifyTrack(sdkTrack.uri);
+    const expectedUri = expectedPlaybackUriRef.current;
+    if (expectedUri && sdkTrack.uri !== expectedUri) {
+      return;
+    }
+    if (!expectedUri && currentTrack?.uri !== sdkTrack.uri) {
+      return;
+    }
+    setCurrentTrack((current) => {
+      if (current?.id === sdkTrack.id) {
+        return current;
+      }
+      return {
+        id: sdkTrack.id,
+        uri: sdkTrack.uri,
+        title: sdkTrack.title,
+        artist: sdkTrack.artist,
+        albumArt: sdkTrack.albumArt,
+        durationMs: sdkTrack.durationMs,
+        addedBy: current?.addedBy ?? hostId,
+      };
+    });
+  }, [currentTrack, handleUnexpectedSpotifyTrack, hostId]);
+
+  const handleSdkPlaybackState = useCallback((snapshot: SpotifyPlaybackSnapshot | null) => {
+    if (!snapshot) {
+      if (!currentTrack) {
+        applyPlaybackState(makePlaybackState(null, 0, false), true);
+      }
+      return;
+    }
+
+    const sdkTrack = snapshot.track_window.current_track;
+    const expectedUri = expectedPlaybackUriRef.current;
+    if (sdkTrack?.uri) {
+      handleUnexpectedSpotifyTrack(sdkTrack.uri);
+    }
+    if (expectedUri && sdkTrack?.uri !== expectedUri) {
+      return;
+    }
+    if (!expectedUri && sdkTrack?.uri !== currentTrack?.uri) {
+      return;
+    }
+    const track =
+      sdkTrack
+        ? expectedTrackRef.current?.uri === sdkTrack.uri
+          ? expectedTrackRef.current
+          : currentTrack?.id === sdkTrack.id
+          ? currentTrack
+          : {
+              id: sdkTrack.id,
+              uri: sdkTrack.uri,
+              title: sdkTrack.name,
+              artist: sdkTrack.artists.map((artist) => artist.name).join(", "),
+              albumArt: sdkTrack.album.images[0]?.url ?? "",
+              durationMs: sdkTrack.duration_ms,
+              addedBy: currentTrack?.addedBy ?? hostId,
+            }
+        : null;
+    if (expectedUri && track?.uri === expectedUri) {
+      expectedPlaybackUriRef.current = "";
+      expectedTrackRef.current = null;
+    }
+    const nextPlayback = makePlaybackState(track, snapshot.position ?? 0, !snapshot.paused);
+    applyPlaybackState(nextPlayback, true);
+  }, [applyPlaybackState, currentTrack, handleUnexpectedSpotifyTrack, hostId, makePlaybackState]);
+
   const seekTo = async (positionMs: number) => {
     const nextPosition = Math.max(0, Math.min(durationMs, positionMs));
-    lastSeekAtRef.current = Date.now();
     progressMsRef.current = nextPosition;
     setProgressMs(nextPosition);
-    const response = await fetch("/api/player/seek", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomCode, positionMs: nextPosition }),
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      setError(payload?.error ?? "Could not seek playback");
+    try {
+      if (!playerRef.current) {
+        throw new Error("Spotify player is not ready yet");
+      }
+      const track = currentTrackRef.current;
+      if (!track) {
+        return;
+      }
+      await playerRef.current.seek(nextPosition);
+      applyPlaybackState(makePlaybackState(track, nextPosition, isPlaying), true);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not seek playback");
     }
   };
 
@@ -586,7 +892,19 @@ export default function HostPage() {
   return (
     <div className="roomi-bg h-screen overflow-hidden text-slate-100">
       <div className="hidden">
-        <Player accessToken={accessToken} onReady={handlePlayerReady} onTrackEnd={() => {}} onStatusChange={() => {}} onTrackChange={() => {}} onError={setError} />
+        <Player
+          ref={playerRef}
+          accessToken={accessToken}
+          deviceId={deviceId}
+          onReady={handlePlayerReady}
+          onTrackEnd={() => {
+            void fetchNextTrack();
+          }}
+          onStatusChange={handleSdkStatusChange}
+          onTrackChange={handleSdkTrackChange}
+          onPlaybackState={handleSdkPlaybackState}
+          onError={setError}
+        />
       </div>
 
       <main className="mx-auto flex h-full max-w-[1600px] flex-col px-4 py-0 sm:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(420px,1fr)] lg:px-8 lg:py-0">

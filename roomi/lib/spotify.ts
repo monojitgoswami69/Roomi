@@ -64,10 +64,11 @@ async function spotifyFetch<T>(path: string, accessToken: string, init: RequestI
 }
 
 export async function searchTracks(accessToken: string, query: string, limit = 10): Promise<Track[]> {
+  const safeLimit = Math.max(1, Math.min(10, Math.floor(limit)));
   const params = new URLSearchParams({
     q: query,
     type: "track",
-    limit: String(limit),
+    limit: String(safeLimit),
   });
   const response = await spotifyFetch<{
     tracks: {
@@ -99,9 +100,10 @@ export async function getRecommendations(
   targetFeatures: Record<string, number> = {},
   limit = 12,
 ): Promise<Track[]> {
+  const safeLimit = Math.max(1, Math.min(10, Math.floor(limit)));
   const params = new URLSearchParams({
     seed_genres: seedGenres.join(","),
-    limit: String(limit),
+    limit: String(safeLimit),
   });
   for (const [key, value] of Object.entries(targetFeatures)) {
     params.set(key, String(value));
@@ -129,13 +131,26 @@ export async function getRecommendations(
 }
 
 export async function activatePlayerDevice(accessToken: string, deviceId: string): Promise<void> {
-  await spotifyFetch<void>("/me/player", accessToken, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ device_ids: [deviceId], play: false }),
-  });
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await spotifyFetch<void>("/me/player", accessToken, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ device_ids: [deviceId], play: false }),
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof SpotifyApiError) || ![404, 429, 502, 503].includes(error.status)) {
+        throw error;
+      }
+      await wait(250 * (attempt + 1));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Spotify device activation failed");
 }
 
 function wait(ms: number): Promise<void> {

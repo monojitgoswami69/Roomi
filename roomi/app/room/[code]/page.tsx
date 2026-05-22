@@ -43,6 +43,13 @@ type SocketAckPayload = {
 
 const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
 
+function createEphemeralGuestId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `guest-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function CustomQRCode({ value }: { value: string }) {
   const qrData = useMemo(() => {
     try {
@@ -132,14 +139,7 @@ function GuestRoomInner() {
     [origin, roomCode],
   );
 
-  const [guestId] = useState(() => {
-    if (typeof window === "undefined") return "";
-    const existing = localStorage.getItem("roomi_guest_id");
-    if (existing) return existing;
-    const id = crypto.randomUUID();
-    localStorage.setItem("roomi_guest_id", id);
-    return id;
-  });
+  const [guestId] = useState(createEphemeralGuestId);
   const [queue, setQueue] = useState<UIQueueItem[]>([]);
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [guestCount, setGuestCount] = useState(0);
@@ -158,13 +158,22 @@ function GuestRoomInner() {
 
   const applyRoomState = useCallback((payload: RoomUpdatedPayload | RoomStatePayload | null | undefined) => {
     if (!payload) return;
+    const queueIsEmpty = (payload.queue ?? []).length === 0;
+    const hasPayloadTrack = Boolean(payload.currentTrack || payload.playback?.track);
+    const isIdleSnapshot = queueIsEmpty && !hasPayloadTrack;
     setQueue(payload.queue ?? []);
-    setCurrentTrack(payload.currentTrack ?? null);
-    if (payload.playback) {
-      setPlaybackState(payload.playback);
-    } else if (!payload.currentTrack) {
+    if (isIdleSnapshot) {
+      setCurrentTrack(null);
       setPlaybackState(null);
       setProgressMs(0);
+    } else {
+      setCurrentTrack(payload.currentTrack ?? null);
+      if (payload.playback) {
+        setPlaybackState(payload.playback);
+      } else if (!payload.currentTrack) {
+        setPlaybackState(null);
+        setProgressMs(0);
+      }
     }
     setGuestCount(payload.guestCount ?? 0);
     setRoomAccess(payload.access ?? "open");
@@ -192,6 +201,7 @@ function GuestRoomInner() {
     if (!guestId || !roomCode) return;
     let socket: Socket | null = null;
     let cancelled = false;
+    let pingIntervalId: number | null = null;
 
     const initializeRoom = async () => {
       const response = await fetch(`/api/room/${roomCode}?viewerId=${encodeURIComponent(guestId)}`);
@@ -269,21 +279,19 @@ function GuestRoomInner() {
         setPlaybackState(payload);
         setCurrentTrack(payload.track);
       });
-      socket.on("playback:started", (payload: PlaybackState) => {
-        setPlaybackState(payload);
-        setCurrentTrack(payload.track);
-      });
       const pingInterval = window.setInterval(() => {
         socket?.emit("room-ping", {}, (ack: { ok?: boolean }) => {
           if (!ack?.ok) void refreshRoomState();
         });
       }, 15000);
+      pingIntervalId = pingInterval;
       socket.on("disconnect", () => window.clearInterval(pingInterval));
     };
 
     initializeRoom().catch(() => { if (!cancelled) { setError("Could not load room"); setLoading(false); } });
     return () => {
       cancelled = true;
+      if (pingIntervalId !== null) window.clearInterval(pingIntervalId);
       socket?.disconnect();
     };
   }, [applyRoomState, displayName, guestId, refreshRoomState, roomCode, router]);
@@ -307,6 +315,7 @@ function GuestRoomInner() {
 
   const visibleProgressMs = currentTrack ? progressMs : 0;
   const renderedQueue = localQueueOverride ?? queue;
+  const isPlaying = Boolean(playbackState?.isPlaying && currentTrack);
 
   if (loading) {
     return (
@@ -328,7 +337,7 @@ function GuestRoomInner() {
               <div
                 className="record-spin absolute z-10 h-[15rem] w-[15rem] rounded-full shadow-[0_40px_100px_rgba(0,0,0,0.8)] lg:h-[26rem] lg:w-[26rem]"
                 style={{
-                  animationPlayState: currentTrack ? "running" : "paused",
+                  animationPlayState: isPlaying ? "running" : "paused",
                   background:
                     "conic-gradient(from 45deg, #1a1a1a, #2a2a2a, #1a1a1a, #333, #1a1a1a, #2a2a2a, #1a1a1a, #333, #1a1a1a), radial-gradient(circle, transparent 20%, #1a1a1a 21%, #0d0d0d 22%, #1a1a1a 24%, #0d0d0d 26%, #222 28%, #0d0d0d 32%, #1a1a1a 36%, #0d0d0d 40%, #1a1a1a 45%, #0d0d0d 50%, #222 55%, #0d0d0d 60%, #1a1a1a 68%, #0d0d0d 76%, #1a1a1a 84%, #0d0d0d 92%, #1a1a1a 100%)",
                   backgroundBlendMode: "overlay",

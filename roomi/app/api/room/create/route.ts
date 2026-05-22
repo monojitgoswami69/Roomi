@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { providerCreateRoom, providerGetRoom } from "@/lib/socketProvider";
+import { providerCreateRoom, providerDeleteRoom } from "@/lib/socketProvider";
 
 export async function POST(request: Request) {
   const session = await getSession(request);
@@ -13,8 +13,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing host session tokens" }, { status: 400 });
   }
 
-  if (session.roomCode && (await providerGetRoom(session.roomCode))) {
-    return NextResponse.json({ code: session.roomCode, roomCode: session.roomCode });
+  if (session.roomCode) {
+    await providerDeleteRoom(session.roomCode).catch(() => undefined);
   }
 
   const room = await providerCreateRoom({

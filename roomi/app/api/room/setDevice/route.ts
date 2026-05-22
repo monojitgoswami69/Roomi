@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { activatePlayerDevice, getAccessToken, SpotifyApiError } from "@/lib/spotify";
 import { providerGetRoom, providerSetDevice } from "@/lib/socketProvider";
 
 export async function POST(request: Request) {
@@ -23,28 +22,5 @@ export async function POST(request: Request) {
   }
 
   await providerSetDevice(room.roomCode, deviceId);
-  try {
-    await activatePlayerDevice(room.accessToken ?? "", deviceId);
-  } catch (error) {
-    if (error instanceof SpotifyApiError && error.status === 401) {
-      try {
-        const accessToken = await getAccessToken(room.refreshToken ?? "");
-        await activatePlayerDevice(accessToken, deviceId);
-      } catch {
-        return NextResponse.json({
-          ok: true,
-          deviceId,
-          activationDeferred: true,
-        });
-      }
-    } else {
-      return NextResponse.json({
-        ok: true,
-        deviceId,
-        activationDeferred: true,
-      });
-    }
-  }
-
   return NextResponse.json({ ok: true, deviceId });
 }

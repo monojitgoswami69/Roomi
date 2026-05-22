@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 const SCOPES = [
   "streaming",
   "user-modify-playback-state",
+  "user-read-playback-state",
   "user-read-email",
   "user-read-private",
 ].join(" ");

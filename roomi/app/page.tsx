@@ -46,13 +46,6 @@ export default function HomePage() {
   const [toastMessage, setToastMessage] = useState("");
 
   useEffect(() => {
-    const existingGuestId = localStorage.getItem("roomi_guest_id");
-    if (!existingGuestId) {
-      localStorage.setItem("roomi_guest_id", crypto.randomUUID());
-    }
-  }, []);
-
-  useEffect(() => {
     let cancelled = false;
     const loadAuthState = async () => {
       try {

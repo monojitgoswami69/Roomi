@@ -89,16 +89,11 @@ type RoomConnectionData = {
   isHost?: boolean;
 };
 
-type SpotifyTokenResponse = {
-  access_token: string;
-};
-
 const PORT = Number(process.env.PORT ?? 4001);
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
-const TRACK_END_GUARD_MS = 2000;
 const STALE_SOCKET_MS = 30000;
 const CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const corsOrigins = (process.env.CORS_ORIGIN ?? "http://127.0.0.1:3000")
+const corsOrigins = (process.env.CORS_ORIGIN ?? "http://127.0.0.1:3000,http://localhost:3000")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
@@ -107,7 +102,6 @@ const rooms = new Map<string, Room>();
 const queueAddedAt = new Map<string, Map<string, number>>();
 const presence = new Map<string, Map<string, PresenceEntry>>();
 const socketConnections = new Map<string, { roomCode: string; guestId: string; isHost: boolean }>();
-const nextTrackLocks = new Map<string, boolean>();
 
 function now(): number {
   return Date.now();
@@ -184,7 +178,6 @@ function createRoom(input: { hostId: string; accessToken: string; refreshToken: 
   rooms.set(roomCode, room);
   queueAddedAt.set(roomCode, new Map<string, number>());
   presence.set(roomCode, new Map<string, PresenceEntry>());
-  nextTrackLocks.set(roomCode, false);
   return room;
 }
 
@@ -193,7 +186,6 @@ function deleteRoom(code: string): void {
   rooms.delete(normalized);
   queueAddedAt.delete(normalized);
   presence.delete(normalized);
-  nextTrackLocks.delete(normalized);
 }
 
 function sortQueue(room: Room): void {
@@ -258,7 +250,7 @@ function emitRoomUpdated(io: Server, roomCode: string): void {
   }
 }
 
-function emitPlaybackState(io: Server, room: Room, event: "playback:state" | "playback:started" | "playback:error", payload: unknown): void {
+function emitPlaybackState(io: Server, room: Room, event: "playback:state" | "playback:error", payload: unknown): void {
   io.to(room.roomCode).emit(event, payload);
 }
 
@@ -316,6 +308,10 @@ function addToQueue(room: Room, item: QueueItem): void {
   getQueueOrder(room.roomCode).set(item.track.id, now());
   sortQueue(room);
   touchRoom(room);
+}
+
+function roomIsIdle(room: Room): boolean {
+  return !room.currentTrack && !room.playback.track && !room.playback.isPlaying;
 }
 
 function isTrackInUse(room: Room, trackId: string): boolean {
@@ -384,45 +380,6 @@ function setRoomAccessToken(room: Room, accessToken: string): void {
   touchRoom(room);
 }
 
-function setPlaybackFromTrack(room: Room, track: Track, positionMs = 0, isPlaying = true): PlaybackState {
-  const playback: PlaybackState = {
-    isPlaying,
-    startedAtTimestamp: now(),
-    startedAtPosition: Math.max(0, Math.min(track.durationMs, positionMs)),
-    pausedAtPosition: Math.max(0, Math.min(track.durationMs, positionMs)),
-    duration: track.durationMs,
-    track,
-  };
-  room.playback = playback;
-  room.currentTrack = track;
-  room.lastActivity = now();
-  return playback;
-}
-
-function setPlaybackPaused(room: Room, track: Track | null, positionMs: number): PlaybackState {
-  const clamped = Math.max(0, Math.min(track?.durationMs ?? 0, positionMs));
-  const playback: PlaybackState = {
-    isPlaying: false,
-    startedAtTimestamp: now(),
-    startedAtPosition: clamped,
-    pausedAtPosition: clamped,
-    duration: track?.durationMs ?? 0,
-    track,
-  };
-  room.playback = playback;
-  room.currentTrack = track;
-  room.lastActivity = now();
-  return playback;
-}
-
-function getCurrentPlaybackPosition(room: Room): number {
-  if (!room.playback.track) return 0;
-  const position = room.playback.isPlaying
-    ? room.playback.startedAtPosition + (now() - room.playback.startedAtTimestamp)
-    : room.playback.pausedAtPosition;
-  return Math.max(0, Math.min(room.playback.duration, position));
-}
-
 function cleanupExpiredRooms(): void {
   const current = now();
   for (const [roomCode, room] of rooms.entries()) {
@@ -432,105 +389,17 @@ function cleanupExpiredRooms(): void {
   }
 }
 
-function getSpotifyAuthHeader(): string {
-  const clientId = process.env.SPOTIFY_CLIENT_ID ?? "";
-  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET ?? "";
-  return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
-}
-
-async function refreshSpotifyToken(room: Room): Promise<string> {
-  const response = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {
-      Authorization: getSpotifyAuthHeader(),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: room.refreshToken,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`Spotify token refresh failed: ${response.status}`);
-  }
-  const payload = (await response.json()) as SpotifyTokenResponse;
-  room.accessToken = payload.access_token;
-  return payload.access_token;
-}
-
-async function spotifyRequest(room: Room, path: string, init: RequestInit = {}): Promise<Response> {
-  const request = async (token: string): Promise<Response> =>
-    fetch(`https://api.spotify.com/v1${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(init.headers ?? {}),
-      },
-    });
-
-  let response = await request(room.accessToken);
-  if (response.status === 401 && room.refreshToken) {
-    const freshToken = await refreshSpotifyToken(room);
-    response = await request(freshToken);
-  }
-  return response;
-}
-
-async function activateSpotifyDevice(room: Room): Promise<void> {
-  if (!room.deviceId) throw new Error("Player not ready");
-  const response = await spotifyRequest(room, `/me/player`, {
-    method: "PUT",
-    body: JSON.stringify({ device_ids: [room.deviceId], play: false }),
-    headers: { "Content-Type": "application/json" },
-  });
-  if (!response.ok && response.status !== 204) {
-    throw new Error(`Spotify device activation failed: ${response.status}`);
-  }
-}
-
-async function playSpotifyTrack(room: Room, track: Track, positionMs = 0): Promise<void> {
-  await activateSpotifyDevice(room);
-  const response = await spotifyRequest(room, `/me/player/play?device_id=${encodeURIComponent(room.deviceId)}`, {
-    method: "PUT",
-    body: JSON.stringify({ uris: [track.uri], position_ms: Math.max(0, positionMs) }),
-    headers: { "Content-Type": "application/json" },
-  });
-  if (!response.ok && response.status !== 204) {
-    throw new Error(`Spotify play failed: ${response.status}`);
-  }
-}
-
-async function pauseSpotify(room: Room): Promise<void> {
-  if (!room.deviceId) return;
-  const response = await spotifyRequest(room, `/me/player/pause?device_id=${encodeURIComponent(room.deviceId)}`, {
-    method: "PUT",
-  });
-  if (!response.ok && response.status !== 204) {
-    throw new Error(`Spotify pause failed: ${response.status}`);
-  }
-}
-
-async function seekSpotify(room: Room, positionMs: number): Promise<void> {
-  if (!room.deviceId) throw new Error("Player not ready");
-  const response = await spotifyRequest(room, `/me/player/seek?position_ms=${Math.max(0, positionMs)}&device_id=${encodeURIComponent(room.deviceId)}`, {
-    method: "PUT",
-  });
-  if (!response.ok && response.status !== 204) {
-    throw new Error(`Spotify seek failed: ${response.status}`);
-  }
-}
-
 function selectNextTrack(room: Room): QueueItem | null {
   if (!room.queue.length) return null;
   return room.queue.find((item) => item.score >= 0) ?? room.queue[0] ?? null;
 }
 
-async function startNextTrack(io: Server, roomCode: string): Promise<void> {
+function claimNextTrack(roomCode: string): Track | null {
   const room = getRoom(roomCode);
-  if (!room || nextTrackLocks.get(room.roomCode)) return;
+  if (!room) throw new Error("Room not found");
   const nextItem = selectNextTrack(room);
   if (!nextItem) {
-    room.currentTrack = null;
+    setCurrentTrack(room, null);
     room.playback = {
       isPlaying: false,
       startedAtTimestamp: 0,
@@ -539,41 +408,24 @@ async function startNextTrack(io: Server, roomCode: string): Promise<void> {
       duration: 0,
       track: null,
     };
-    emitRoomUpdated(io, room.roomCode);
-    return;
+    return null;
   }
 
-  nextTrackLocks.set(room.roomCode, true);
-  try {
-    room.queue = room.queue.filter((item) => item.track.id !== nextItem.track.id);
-    getQueueOrder(room.roomCode).delete(nextItem.track.id);
-    await pauseSpotify(room).catch(() => undefined);
-    await playSpotifyTrack(room, nextItem.track, 0);
-    const playback = setPlaybackFromTrack(room, nextItem.track, 0, true);
-    emitPlaybackState(io, room, "playback:started", playback);
-    emitRoomUpdated(io, room.roomCode);
-  } catch (error) {
-    emitPlaybackState(io, room, "playback:error", {
-      error: error instanceof Error ? error.message : "Failed to start next track",
-    });
-  } finally {
-    nextTrackLocks.set(room.roomCode, false);
-  }
+  room.queue = room.queue.filter((item) => item.track.id !== nextItem.track.id);
+  getQueueOrder(room.roomCode).delete(nextItem.track.id);
+  setCurrentTrack(room, nextItem.track);
+  room.playback = {
+    isPlaying: false,
+    startedAtTimestamp: 0,
+    startedAtPosition: 0,
+    pausedAtPosition: 0,
+    duration: nextItem.track.durationMs,
+    track: nextItem.track,
+  };
+  return nextItem.track;
 }
 
-async function handleSeek(io: Server, roomCode: string, positionMs: number): Promise<PlaybackState> {
-  const room = getRoom(roomCode);
-  if (!room) throw new Error("Room not found");
-  if (!room.currentTrack) throw new Error("No active track");
-
-  await seekSpotify(room, positionMs);
-  const playback = setPlaybackFromTrack(room, room.currentTrack, positionMs, true);
-  emitPlaybackState(io, room, "playback:state", playback);
-  emitRoomUpdated(io, room.roomCode);
-  return playback;
-}
-
-async function playTrackByUri(io: Server, roomCode: string, uri: string): Promise<PlaybackState> {
+function claimTrackByUri(roomCode: string, uri: string): Track {
   const room = getRoom(roomCode);
   if (!room) throw new Error("Room not found");
   const current = room.currentTrack?.uri === uri ? room.currentTrack : null;
@@ -585,30 +437,48 @@ async function playTrackByUri(io: Server, roomCode: string, uri: string): Promis
     room.queue = room.queue.filter((item) => item.track.id !== queued.track.id);
     getQueueOrder(room.roomCode).delete(queued.track.id);
   }
-  await pauseSpotify(room).catch(() => undefined);
-  await playSpotifyTrack(room, track, 0);
-  const playback = setPlaybackFromTrack(room, track, 0, true);
-  emitPlaybackState(io, room, "playback:started", playback);
-  emitRoomUpdated(io, room.roomCode);
-  return playback;
+  setCurrentTrack(room, track);
+  room.playback = {
+    isPlaying: false,
+    startedAtTimestamp: 0,
+    startedAtPosition: 0,
+    pausedAtPosition: 0,
+    duration: track.durationMs,
+    track,
+  };
+  return track;
 }
 
-async function togglePlayback(io: Server, roomCode: string): Promise<PlaybackState> {
-  const room = getRoom(roomCode);
-  if (!room) throw new Error("Room not found");
-  if (!room.currentTrack) throw new Error("No active track");
-  const positionMs = getCurrentPlaybackPosition(room);
-
-  if (room.playback.isPlaying) {
-    await pauseSpotify(room);
-    const playback = setPlaybackPaused(room, room.currentTrack, positionMs);
-    emitPlaybackState(io, room, "playback:state", playback);
-    emitRoomUpdated(io, room.roomCode);
-    return playback;
+function normalizePlaybackState(payload: unknown): PlaybackState | null {
+  const input = payload as Partial<PlaybackState> | null;
+  if (!input || typeof input !== "object") return null;
+  const track = input.track ?? null;
+  if (
+    track &&
+    (!track.id || !track.uri || !track.title || typeof track.durationMs !== "number")
+  ) {
+    return null;
   }
+  const duration = Number(input.duration ?? track?.durationMs ?? 0);
+  const startedAtPosition = Number(input.startedAtPosition ?? 0);
+  const pausedAtPosition = Number(input.pausedAtPosition ?? startedAtPosition);
+  const startedAtTimestamp = Number(input.startedAtTimestamp ?? now());
+  return {
+    isPlaying: Boolean(input.isPlaying && track),
+    startedAtTimestamp: Number.isFinite(startedAtTimestamp) ? startedAtTimestamp : now(),
+    startedAtPosition: Number.isFinite(startedAtPosition) ? Math.max(0, startedAtPosition) : 0,
+    pausedAtPosition: Number.isFinite(pausedAtPosition) ? Math.max(0, pausedAtPosition) : 0,
+    duration: Number.isFinite(duration) ? Math.max(0, duration) : 0,
+    track,
+  };
+}
 
-  await playSpotifyTrack(room, room.currentTrack, positionMs);
-  const playback = setPlaybackFromTrack(room, room.currentTrack, positionMs, true);
+function publishHostPlaybackState(io: Server, room: Room, payload: unknown): PlaybackState {
+  const playback = normalizePlaybackState(payload);
+  if (!playback) throw new Error("Invalid playback state");
+  room.playback = playback;
+  room.currentTrack = playback.track;
+  room.lastActivity = now();
   emitPlaybackState(io, room, "playback:state", playback);
   emitRoomUpdated(io, room.roomCode);
   return playback;
@@ -820,14 +690,9 @@ app.post("/api/rooms/:roomCode/queue", (req, res) => {
     voters: { [guestId]: "up" },
   };
   addToQueue(room, queueItem);
-  const shouldAutoPlay = !room.currentTrack && room.queue.length === 1 && Boolean(room.deviceId);
+  const autoPlayTrack = roomIsIdle(room) ? claimNextTrack(room.roomCode) : null;
   emitRoomUpdated(io, room.roomCode);
-  void (async () => {
-    if (shouldAutoPlay) {
-      await startNextTrack(io, room.roomCode);
-    }
-  })();
-  res.json({ ok: true, state: buildPublicRoomState(room, guestId) });
+  res.json({ ok: true, autoPlayTrack, state: buildPublicRoomState(room, guestId) });
 });
 
 app.post("/api/rooms/:roomCode/queue/batch", (req, res) => {
@@ -863,14 +728,13 @@ app.post("/api/rooms/:roomCode/queue/batch", (req, res) => {
     addedCount += 1;
   }
 
+  const autoPlayTrack = addedCount > 0 && roomIsIdle(room) ? claimNextTrack(room.roomCode) : null;
+
   if (addedCount > 0) {
     emitRoomUpdated(io, room.roomCode);
-    if (!room.currentTrack && room.queue.length >= addedCount && Boolean(room.deviceId)) {
-      void startNextTrack(io, room.roomCode);
-    }
   }
 
-  res.json({ ok: true, addedCount, state: buildPublicRoomState(room, guestId) });
+  res.json({ ok: true, addedCount, autoPlayTrack, state: buildPublicRoomState(room, guestId) });
 });
 
 app.post("/api/rooms/:roomCode/vote", (req, res) => {
@@ -921,8 +785,9 @@ app.post("/api/rooms/:roomCode/playback/next", async (req, res) => {
     return;
   }
   try {
-    await startNextTrack(io, room.roomCode);
-    res.json({ currentTrack: room.currentTrack, playback: room.playback });
+    const track = claimNextTrack(room.roomCode);
+    emitRoomUpdated(io, room.roomCode);
+    res.json({ currentTrack: track, playback: room.playback, queue: room.queue });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to play next track" });
   }
@@ -936,7 +801,23 @@ app.post("/api/rooms/:roomCode/playback/seek", async (req, res) => {
     return;
   }
   try {
-    const playback = await handleSeek(io, room.roomCode, positionMs);
+    if (!room.playback.track) {
+      throw new Error("No active track");
+    }
+    const track = room.playback.track;
+    const clamped = Math.max(0, Math.min(track.durationMs, positionMs));
+    const playback: PlaybackState = {
+      isPlaying: room.playback.isPlaying,
+      startedAtTimestamp: room.playback.isPlaying ? now() : room.playback.startedAtTimestamp,
+      startedAtPosition: clamped,
+      pausedAtPosition: clamped,
+      duration: track.durationMs,
+      track,
+    };
+    room.playback = playback;
+    room.currentTrack = track;
+    emitPlaybackState(io, room, "playback:state", playback);
+    emitRoomUpdated(io, room.roomCode);
     res.json({ playback });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to seek playback" });
@@ -951,8 +832,9 @@ app.post("/api/rooms/:roomCode/playback/play", async (req, res) => {
     return;
   }
   try {
-    const playback = await playTrackByUri(io, room.roomCode, uri);
-    res.json({ currentTrack: room.currentTrack, playback });
+    const track = claimTrackByUri(room.roomCode, uri);
+    emitRoomUpdated(io, room.roomCode);
+    res.json({ currentTrack: track, playback: room.playback, queue: room.queue });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to play track" });
   }
@@ -965,10 +847,41 @@ app.post("/api/rooms/:roomCode/playback/toggle", async (req, res) => {
     return;
   }
   try {
-    const playback = await togglePlayback(io, room.roomCode);
+    if (!room.playback.track) {
+      throw new Error("No active track");
+    }
+    const positionMs = room.playback.isPlaying
+      ? Math.max(0, room.playback.startedAtPosition + (now() - room.playback.startedAtTimestamp))
+      : room.playback.pausedAtPosition;
+    const playback: PlaybackState = {
+      isPlaying: !room.playback.isPlaying,
+      startedAtTimestamp: now(),
+      startedAtPosition: positionMs,
+      pausedAtPosition: positionMs,
+      duration: room.playback.track.durationMs,
+      track: room.playback.track,
+    };
+    room.playback = playback;
+    room.currentTrack = room.playback.track;
+    emitPlaybackState(io, room, "playback:state", playback);
+    emitRoomUpdated(io, room.roomCode);
     res.json({ currentTrack: room.currentTrack, playback });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "Failed to toggle playback" });
+  }
+});
+
+app.post("/api/rooms/:roomCode/playback/state", (req, res) => {
+  const room = getRoom(req.params.roomCode);
+  if (!room) {
+    res.status(404).json({ error: "Room not found" });
+    return;
+  }
+  try {
+    const playback = publishHostPlaybackState(io, room, req.body?.playback);
+    res.json({ playback });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Invalid playback state" });
   }
 });
 
@@ -1037,15 +950,6 @@ setInterval(() => {
     }
   }
 }, 15000);
-setInterval(() => {
-  for (const room of rooms.values()) {
-    if (!room.playback.isPlaying || !room.playback.track) continue;
-    const elapsed = room.playback.startedAtPosition + (now() - room.playback.startedAtTimestamp);
-    if (elapsed >= room.playback.duration - TRACK_END_GUARD_MS && !nextTrackLocks.get(room.roomCode)) {
-      void startNextTrack(io, room.roomCode);
-    }
-  }
-}, 3000);
 
 httpServer.listen(PORT, () => {
   console.log(`Socket provider listening on http://127.0.0.1:${PORT}`);
