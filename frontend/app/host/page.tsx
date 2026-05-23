@@ -584,11 +584,14 @@ export default function HostPage() {
     const ourTrack = currentTrackRef.current;
     if (expected === sdkTrackUri || ourTrack?.uri === sdkTrackUri) return;
     if (expected || hostActionRef.current) return;
+    // Only treat the SDK URI as a ghost when we have an active track to
+    // compare against. During idle (currentTrack === null), the SDK's
+    // track_window retains the previous URI even after clearPlayback —
+    // that's residual state, not a phantom queue, and the empty-queue
+    // effect above already handles the idle clear once.
+    if (!ourTrack) return;
     // Spotify Connect can resurface a phantom internal queue. Roomi is the
     // authoritative queue, so stop the ghost and advance to our next track.
-    // Rate-limit ghost-clears so that residual track_window state after a
-    // clearPlayback (the SDK keeps the old URI) can't trigger a recursive
-    // loop of startTrack(null) → clearPlayback → state change → repeat.
     if (Date.now() - lastGhostClearAtRef.current < 3000) return;
     lastGhostClearAtRef.current = Date.now();
     void playerRef.current?.pause().catch(() => undefined);
@@ -927,7 +930,7 @@ export default function HostPage() {
                             className="fixed inset-0 z-40 bg-transparent cursor-default"
                             onClick={() => setShowGuestsDropdown(false)}
                           />
-                          <div className="absolute right-0 top-full mt-2 z-50 w-[min(calc(100vw-2rem),24rem)] max-h-[60vh] overflow-y-auto rounded-[24px] border border-white/10 bg-[#040816]/95 p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)] backdrop-blur-2xl animate-scale-in no-scrollbar space-y-4">
+                          <div className="absolute right-[-40px] md:right-0 top-full mt-2 z-50 w-[min(calc(100vw-2rem),24rem)] max-h-[60vh] overflow-y-auto rounded-[24px] border border-white/10 bg-[#040816]/95 p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)] backdrop-blur-2xl animate-scale-in no-scrollbar space-y-4">
                             {/* Waitlist (Requests) Section */}
                             <section className="space-y-2.5">
                               <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-amber-300/80 select-none">

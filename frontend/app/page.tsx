@@ -168,7 +168,7 @@ export default function HomePage() {
             textAlign: "center",
             fontFamily: "var(--font-sans)",
             fontWeight: 700,
-            fontSize: "clamp(52px, 7vw, 88px)",
+            fontSize: "clamp(36px, 7vw, 88px)",
             lineHeight: 1.05,
             letterSpacing: "-0.03em",
             margin: 0,
@@ -255,12 +255,13 @@ export default function HomePage() {
                     letterSpacing: "-0.01em",
                     textDecoration: "none",
                     cursor: "pointer",
+                    marginTop: 24,
                   }}
                 >
                   Connect with Spotify
                 </a>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 24 }}>
                   <button
                     type="button"
                     disabled={createLoading}

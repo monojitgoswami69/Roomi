@@ -370,47 +370,59 @@ export default function SearchModal({
       onClick={handleClose}
     >
       <div
-        className={`relative grid h-[88vh] max-h-[840px] w-full max-w-[94vw] lg:max-w-[80vw] gap-0 overflow-hidden rounded-[28px] border-2 border-slate-700/80 bg-gradient-to-b from-[#111827] to-[#0a0f1a] shadow-[0_30px_70px_-10px_rgba(0,0,0,0.98),0_0_50px_rgba(56,189,248,0.06)] grid-rows-[1.3fr_0.7fr] md:grid-rows-none md:grid-cols-[minmax(0,1.35fr)_360px] ${
+        className={`relative grid h-[92vh] sm:h-[88vh] max-h-[840px] w-full max-w-[94vw] lg:max-w-[80vw] gap-0 overflow-hidden rounded-[24px] sm:rounded-[28px] border-2 border-slate-700/80 bg-gradient-to-b from-[#111827] to-[#0a0f1a] shadow-[0_30px_70px_-10px_rgba(0,0,0,0.98),0_0_50px_rgba(56,189,248,0.06)] grid-rows-[minmax(0,1fr)_auto] md:grid-rows-none md:grid-cols-[minmax(0,1.35fr)_360px] ${
           isClosing ? "animate-modal-exit" : "animate-modal-enter"
         }`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex min-h-0 flex-col">
-          <div className="px-6 pb-4 pt-5 sm:px-8">
-            <div className="flex items-center gap-3.5 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 transition-all focus-within:border-white/20 focus-within:bg-white/[0.05]">
-              <Search className="h-5 w-5 shrink-0 text-slate-400" />
-              <input
-                ref={inputRef}
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  if (!e.target.value.trim()) {
-                    setResults([]);
-                    setError("");
-                    setLoading(false);
-                  }
-                }}
-                placeholder="Search songs, artists..."
-                className="w-full border-none bg-transparent text-base text-white outline-none ring-0 focus:border-none focus:outline-none focus:ring-0 placeholder:text-slate-450 search-input-no-ring"
-                style={{ caretColor: "#64748b" }}
-              />
-              {query ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setQuery("");
-                    setResults([]);
-                    setError("");
+        <div className="flex min-h-0 min-w-0 flex-col">
+          <div className="px-4 pb-3 pt-4 sm:px-8 sm:pb-4 sm:pt-5">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="flex flex-1 items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 sm:px-4 py-2.5 sm:py-3 transition-all focus-within:border-white/20 focus-within:bg-white/[0.05]">
+                <Search className="h-5 w-5 shrink-0 text-slate-400" />
+                <input
+                  ref={inputRef}
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    if (!e.target.value.trim()) {
+                      setResults([]);
+                      setError("");
+                      setLoading(false);
+                    }
                   }}
-                  className="rounded-lg p-1.5 text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-350"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              ) : null}
+                  placeholder="Search songs, artists..."
+                  className="w-full min-w-0 border-none bg-transparent text-base text-white outline-none ring-0 focus:border-none focus:outline-none focus:ring-0 placeholder:text-slate-450 search-input-no-ring"
+                  style={{ caretColor: "#64748b" }}
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery("");
+                      setResults([]);
+                      setError("");
+                    }}
+                    className="rounded-lg p-1.5 text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-350"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="md:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.02] text-slate-400 transition-all hover:bg-white/[0.08] hover:text-white active:scale-95"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar px-6 py-3 sm:px-8">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain no-scrollbar px-4 py-3 sm:px-8"
+          >
             {error ? (
               <p className="mb-4 rounded-xl border border-rose-500/10 bg-rose-500/5 px-4 py-2.5 text-sm text-rose-350">
                 {error}
@@ -432,18 +444,18 @@ export default function SearchModal({
                 /* Home Browse Page */
                 <div className="space-y-8">
                   <div>
-                    <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
+                    <div className="grid grid-cols-2 gap-2.5 sm:gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
                       {MOOD_CATEGORIES.map((mood) => (
                         <button
                           key={mood.id}
                           type="button"
                           onClick={() => setActiveMood(mood.id)}
-                          className="h-24 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 text-left overflow-hidden relative group hover:bg-white/[0.04] hover:border-white/15 transition-all duration-300"
+                          className="h-20 sm:h-24 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4 sm:p-5 text-left overflow-hidden relative group hover:bg-white/[0.04] hover:border-white/15 transition-all duration-300"
                         >
-                          <span className="text-lg font-extrabold text-white block tracking-tight">
+                          <span className="text-base sm:text-lg font-extrabold text-white block tracking-tight">
                             {mood.label}
                           </span>
-                          <span className="text-4xl absolute -right-1 -bottom-1.5 rotate-[20deg] opacity-35 scale-100 group-hover:scale-110 group-hover:rotate-[12deg] transition-all duration-300 select-none">
+                          <span className="text-3xl sm:text-4xl absolute -right-1 -bottom-1.5 rotate-[20deg] opacity-35 scale-100 group-hover:scale-110 group-hover:rotate-[12deg] transition-all duration-300 select-none">
                             {mood.emoji}
                           </span>
                         </button>
@@ -663,8 +675,8 @@ export default function SearchModal({
           </div>
         </div>
 
-        <aside className="flex min-h-0 flex-col border-t border-white/[0.08] bg-white/[0.005] p-6 md:border-l md:border-white/[0.08] md:border-t-0">
-          <div className="mb-4 flex items-center justify-between">
+        <aside className="flex min-h-0 min-w-0 w-full flex-col border-t border-white/[0.08] bg-white/[0.005] p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] sm:p-4 sm:pb-[calc(1rem+env(safe-area-inset-bottom,0px))] md:p-6 md:pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] md:border-l md:border-white/[0.08] md:border-t-0">
+          <div className="mb-3 hidden md:flex items-center justify-between md:mb-4">
             <div>
               <p className="text-xs font-bold uppercase tracking-widest text-sky-400/90">
                 Your picks
@@ -686,7 +698,40 @@ export default function SearchModal({
             </button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar">
+          {/* Mobile: horizontal scroll strip of staged tracks */}
+          {selectedTracks.length > 0 ? (
+            <div
+              className="md:hidden mb-3 flex w-full gap-2 overflow-x-auto overscroll-contain no-scrollbar -mx-1 px-1"
+            >
+              {selectedTracks.map((track) => (
+                <button
+                  key={track.id}
+                  type="button"
+                  onClick={() => toggleSelection(track)}
+                  className="group relative shrink-0"
+                  aria-label={`Remove ${track.title}`}
+                >
+                  {track.albumArt ? (
+                    <img
+                      src={track.albumArt}
+                      alt={track.title}
+                      className="h-12 w-12 rounded-lg object-cover border border-white/10"
+                    />
+                  ) : (
+                    <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-slate-900/60 border border-white/10">
+                      <Music className="h-5 w-5 text-slate-500" />
+                    </div>
+                  )}
+                  <span className="absolute -top-1 -right-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-white shadow">
+                    <X className="h-3 w-3" />
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {/* Desktop: full picks list */}
+          <div className="hidden md:block min-h-0 flex-1 overflow-y-auto no-scrollbar">
             {selectedTracks.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center px-4 text-center">
                 <Music className="h-7 w-7 text-slate-700 animate-pulse" />
@@ -735,12 +780,12 @@ export default function SearchModal({
             )}
           </div>
 
-          <div className="mt-5">
+          <div className="md:mt-5">
             <button
               type="button"
               onClick={confirmSelection}
               disabled={!selectedTracks.length || confirming}
-              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 text-base font-bold text-slate-950 transition-all hover:bg-emerald-450 hover:scale-[1.01] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-30"
+              className="inline-flex h-11 sm:h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 text-sm sm:text-base font-bold text-slate-950 transition-all hover:bg-emerald-450 hover:scale-[1.01] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-30"
             >
               {confirming ? (
                 <LoaderCircle className="h-5 w-5 animate-spin" />
