@@ -33,6 +33,7 @@ import Player, {
 import Queue from "@/components/Queue";
 import RoomQRCode from "@/components/RoomQRCode";
 import SearchModal from "@/components/SearchModal";
+import VinylDisc from "@/components/VinylDisc";
 import { createRoomiSocket, type RoomiSocket } from "@/lib/socket";
 import type {
   PlaybackState,
@@ -675,45 +676,7 @@ export default function HostPage() {
       <main className="mx-auto flex h-full max-w-[1600px] flex-col px-4 py-0 sm:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(420px,1fr)] lg:px-8 lg:py-0">
         <section className="min-h-0 flex flex-1 flex-col justify-center overflow-y-auto px-0 pb-16 pt-0 lg:px-4 lg:pb-0 lg:pt-0 lg:border-r lg:border-white/10 lg:pr-8">
           <div className="flex w-full flex-col items-center justify-center">
-            <div className="relative flex h-[15rem] w-[15rem] items-center justify-center lg:h-[26rem] lg:w-[26rem]">
-              <div
-                className="record-spin absolute z-10 h-[15rem] w-[15rem] rounded-full shadow-[0_40px_100px_rgba(0,0,0,0.8)] lg:h-[26rem] lg:w-[26rem]"
-                style={{
-                  animationPlayState: isPlaying ? "running" : "paused",
-                  background:
-                    "conic-gradient(from 45deg, #1a1a1a, #2a2a2a, #1a1a1a, #333, #1a1a1a, #2a2a2a, #1a1a1a, #333, #1a1a1a), radial-gradient(circle, transparent 20%, #1a1a1a 21%, #0d0d0d 22%, #1a1a1a 24%, #0d0d0d 26%, #222 28%, #0d0d0d 32%, #1a1a1a 36%, #0d0d0d 40%, #1a1a1a 45%, #0d0d0d 50%, #222 55%, #0d0d0d 60%, #1a1a1a 68%, #0d0d0d 76%, #1a1a1a 84%, #0d0d0d 92%, #1a1a1a 100%)",
-                  backgroundBlendMode: "overlay",
-                }}
-              >
-                <div
-                  className="absolute inset-0 rounded-full"
-                  style={{
-                    background:
-                      "conic-gradient(from 120deg, transparent 0%, rgba(255,255,255,0.04) 10%, transparent 20%, rgba(255,255,255,0.06) 45%, transparent 55%, rgba(255,255,255,0.03) 70%, transparent 80%)",
-                    mixBlendMode: "screen",
-                  }}
-                />
-              </div>
-              <div
-                className="absolute z-20 h-[5.8rem] w-[5.8rem] overflow-hidden rounded-full lg:h-[10.2rem] lg:w-[10.2rem]"
-                style={{
-                  maskImage: "radial-gradient(circle, black 50%, rgba(0,0,0,0.4) 70%, transparent 95%)",
-                  WebkitMaskImage: "radial-gradient(circle, black 50%, rgba(0,0,0,0.4) 70%, transparent 95%)",
-                }}
-              >
-                {displayTrack?.albumArt ? (
-                  <img
-                    src={displayTrack.albumArt}
-                    alt={displayTrack.title}
-                    className="h-full w-full object-cover opacity-90"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center bg-zinc-900">
-                    <Music className="h-10 w-10 text-white/50" />
-                  </div>
-                )}
-              </div>
-            </div>
+            <VinylDisc track={displayTrack} isPlaying={isPlaying} />
 
             <div className="mt-6 text-center w-full max-w-2xl px-4">
               <h2 className="mx-auto text-[2rem] font-semibold tracking-tight text-slate-50 lg:text-[2.35rem] line-clamp-1 truncate">
