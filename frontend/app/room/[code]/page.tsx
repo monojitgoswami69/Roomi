@@ -278,9 +278,9 @@ function GuestRoomInner() {
                 <button
                   type="button"
                   onClick={startSkipVote}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-bold text-slate-200 transition hover:bg-white/[0.08] hover:scale-[1.02] active:scale-95"
+                  className="inline-flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/[0.04] px-6 py-3 text-sm font-bold text-slate-100 transition hover:bg-white/[0.08] hover:border-sky-400/30 hover:scale-[1.02] active:scale-95 shadow-[0_4px_16px_rgba(0,0,0,0.25)]"
                 >
-                  <FastForward className="h-3.5 w-3.5 text-sky-300" />
+                  <FastForward className="h-4 w-4 text-sky-300" />
                   Vote to skip
                 </button>
               </div>
