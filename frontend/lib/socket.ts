@@ -75,7 +75,27 @@ export type RoomiSocket = Socket;
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL;
 
 export function createRoomiSocket(): RoomiSocket {
-  return io(SOCKET_URL || undefined, {
+  let url: string | undefined = SOCKET_URL;
+
+  if (typeof window !== "undefined") {
+    const isPageHttps = window.location.protocol === "https:";
+    const pageHostname = window.location.hostname;
+    
+    // 1. Fallback to same-origin (undefined) if production domain is remote but socket points to localhost
+    const isUrlLocal = !!(url && (url.includes("localhost") || url.includes("127.0.0.1")));
+    const isPageLocal = pageHostname === "localhost" || pageHostname === "127.0.0.1";
+    
+    if (isUrlLocal && !isPageLocal) {
+      url = undefined;
+    }
+
+    // 2. Upgrade http to https if loading from a secure page to prevent mixed content blocking
+    if (isPageHttps && url && url.startsWith("http://")) {
+      url = url.replace("http://", "https://");
+    }
+  }
+
+  return io(url || undefined, {
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 250,

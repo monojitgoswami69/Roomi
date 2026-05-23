@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
   ChevronUp,
   Copy,
   ListMusic,
@@ -63,6 +64,7 @@ function GuestRoomInner() {
   const [showSearch, setShowSearch] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
   const [glowTheme, setGlowTheme] = useState<"cyberpunk" | "aurora" | "midnight" | "amber">("cyberpunk");
   const [copied, setCopied] = useState(false);
   const [progressMs, setProgressMs] = useState(0);
@@ -248,7 +250,7 @@ function GuestRoomInner() {
         <button
           type="button"
           onClick={() => setShowDrawer(true)}
-          className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-center gap-2 rounded-t-2xl border-t border-white/10 bg-slate-900/95 px-4 py-3.5 backdrop-blur-xl lg:hidden"
+          className="fixed bottom-0 left-4 right-4 z-40 flex h-14 items-center justify-center gap-2 rounded-t-2xl border-t border-x border-white/10 bg-slate-900/95 px-6 backdrop-blur-xl lg:hidden shadow-[0_-8px_24px_rgba(0,0,0,0.4)] active:scale-[0.99] transition-all"
           aria-label="Open queue"
         >
           <ChevronUp className="h-4 w-4 text-slate-400" />
@@ -280,93 +282,198 @@ function GuestRoomInner() {
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-6 lg:h-full lg:overflow-hidden lg:p-4 lg:pl-8">
             <div className="flex min-h-full flex-col lg:h-full lg:overflow-hidden">
-              <div className="z-20 shrink-0 border-b border-white/10 pb-4 pt-3 lg:border-white/8 lg:pb-5 lg:pt-5">
-                <div className="grid gap-4 grid-cols-[1fr_auto] items-start">
-                  <div className="flex h-full min-w-0 flex-col justify-start">
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">Room ID</p>
-                        <button
-                          type="button"
-                          onClick={() => setShowSettings(true)}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-400 hover:text-white transition"
-                          aria-label="Room Settings"
-                        >
-                          <Settings className="h-4 w-4" />
-                        </button>
-                      </div>
-                      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2.5">
-                        <h2 className="min-w-0 break-all font-mono text-[clamp(2rem,8vw,2.6rem)] font-bold tracking-[0.18em] text-sky-300 lg:text-[clamp(2rem,3vw,2.35rem)]">
-                          {roomCode}
-                        </h2>
-                        <button
-                          type="button"
-                          onClick={copyCode}
-                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-slate-300 transition hover:text-sky-200"
-                          aria-label="Copy room code"
-                        >
-                          {copied ? <Check className="h-5 w-5 text-emerald-300" /> : <Copy className="h-5 w-5" />}
-                        </button>
-                      </div>
+              <div className={`z-20 shrink-0 border-b border-white/10 relative transition-all duration-500 ease-in-out ${
+                isHeaderCollapsed ? "pb-2.5 pt-2.5" : "pb-3 pt-2.5"
+              }`}>
+                {/* Top Row: Compact Room ID (Visible and relative in document flow when collapsed, hidden absolute when expanded) */}
+                <div className={`flex items-center gap-2.5 transition-all duration-500 ease-in-out ${
+                  isHeaderCollapsed ? "opacity-100 translate-x-0 relative" : "opacity-0 -translate-x-4 pointer-events-none absolute"
+                }`}>
+                  <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-sky-200/50">Room ID</span>
+                  <span className="font-mono text-sm font-bold tracking-wider text-sky-300">{roomCode}</span>
+                  <button
+                    type="button"
+                    onClick={copyCode}
+                    className="inline-flex h-6 w-6 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none"
+                    aria-label="Copy room code"
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+
+                {/* Floating Settings & Guest Controls (Always absolute at the top-right to prevent taking up vertical height in flow) */}
+                <div className="absolute top-2.5 right-0 z-40 flex items-center gap-2">
+                    {/* Connected Guests Button (read-only count for guest layout) */}
+                    <div className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-bold text-slate-400 select-none">
+                      <Users className="h-4 w-4" />
+                      <span className="font-mono text-[11px]">{guestCount}</span>
                     </div>
 
-                    <div className="mt-4 flex w-full max-w-[12rem] flex-col gap-2">
+                    {/* Settings Dropdown Button and Popup */}
+                    <div className="relative">
                       <button
                         type="button"
-                        className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-semibold text-slate-200 transition"
-                        aria-label="Connected guests"
+                        onClick={() => setShowSettings(!showSettings)}
+                        className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none hover:scale-105"
+                        aria-label="Room Settings"
                       >
-                        <Users className="h-3.5 w-3.5" />
-                        <span className="truncate">{guestCount} connected</span>
+                        <Settings 
+                          className={`h-4.5 w-4.5 transition-transform duration-500 ease-out ${
+                            showSettings ? "rotate-90 text-sky-300 scale-110" : "rotate-0 text-slate-400"
+                          }`} 
+                        />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => router.push("/")}
-                        className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-rose-400/20 bg-rose-500/10 px-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20"
-                        aria-label="Leave room"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        <span className="truncate">Leave</span>
-                      </button>
-                    </div>
-                  </div>
 
-                  <div className="flex h-full items-start justify-end p-0">
-                    <div className="flex shrink-0 scale-[0.72] origin-top-right min-[420px]:scale-[0.78] sm:scale-[0.84] lg:scale-100">
-                      {joinUrl ? <RoomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400" />}
+                      {showSettings && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-45 bg-transparent cursor-default"
+                            onClick={() => setShowSettings(false)}
+                          />
+                          <div className="absolute right-0 top-full mt-2 z-50 w-[min(calc(100vw-2rem),24rem)] max-h-[60vh] overflow-y-auto rounded-[24px] border border-white/10 bg-[#040816]/95 p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)] backdrop-blur-2xl animate-scale-in no-scrollbar">
+                            {/* Dropdown Scrollable Settings */}
+                            <div className="space-y-4">
+                              {/* Room Info */}
+                              <section className="space-y-2.5">
+                                <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-sky-300/80">Room Info</h4>
+                                <div className="flex flex-col gap-2 rounded-xl border border-white/[0.04] bg-slate-950/50 p-3.5 text-xs text-slate-300 select-none">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-slate-400">Status</span>
+                                    <span className={`px-2 py-0.5 rounded font-bold capitalize ${roomAccess === "open" ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"}`}>
+                                      {roomAccess} Joining
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+                                    {roomAccess === "open" 
+                                      ? "Anyone can join and add songs immediately." 
+                                      : "Host approval is required to join this session."}
+                                  </p>
+                                </div>
+                              </section>
+
+                              <hr className="border-t border-white/5 my-1" />
+
+                              {/* Vinyl Theme selection (Personal visual preference!) */}
+                              <section className="space-y-3">
+                                <div>
+                                  <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-sky-300/80">Vinyl Glow Theme</h4>
+                                  <p className="mt-0.5 text-[10px] text-slate-500">Select your personal neon theme for the spinning deck.</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  {(["cyberpunk", "aurora", "midnight", "amber"] as const).map((t) => (
+                                    <button
+                                      key={t}
+                                      type="button"
+                                      onClick={() => setGlowTheme(t)}
+                                      className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-xs font-semibold capitalize transition ${
+                                        glowTheme === t
+                                          ? "border-sky-400 bg-sky-400/10 text-sky-200 shadow-md scale-[1.01]"
+                                          : "border-white/5 bg-white/[0.03] text-slate-300 hover:bg-white/8 hover:scale-[1.01]"
+                                      }`}
+                                    >
+                                      {t}
+                                    </button>
+                                  ))}
+                                </div>
+                              </section>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                </div>
+
+                {/* Collapsible Content Area (Centred room ID + QR Code) with smooth slide and fade transitions */}
+                <div 
+                  className="grid transition-all duration-500 ease-in-out overflow-hidden"
+                  style={{ gridTemplateRows: isHeaderCollapsed ? "0fr" : "1fr" }}
+                >
+                  <div className="min-h-0">
+                    <div className={`transition-all duration-500 ease-in-out transform origin-top ${
+                      isHeaderCollapsed ? "opacity-0 -translate-y-4 scale-95 pointer-events-none" : "opacity-100 translate-y-0 scale-100"
+                    }`}>
+                      {/* Centered Group: Room ID and QR Code */}
+                      <div className="flex flex-col sm:flex-row items-center justify-center gap-10 py-1.5 w-full">
+                        {/* Room ID and Leave Session button */}
+                        <div className="flex flex-col items-center sm:items-start text-center sm:text-left justify-center">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-sky-200/50">Room ID</p>
+                          <div className="mt-1 flex items-end gap-0.5">
+                            <h2 className="font-mono text-5xl sm:text-6xl font-black tracking-[0.2em] text-sky-300">
+                              {roomCode}
+                            </h2>
+                            <button
+                              type="button"
+                              onClick={copyCode}
+                              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:text-sky-300 hover:bg-white/[0.05] transition-all focus:outline-none active:scale-90 -ml-[0.24em] mb-1.5"
+                              aria-label="Copy room code"
+                            >
+                              {copied ? <Check className="h-5.5 w-5.5 text-emerald-400" /> : <Copy className="h-5.5 w-5.5" />}
+                            </button>
+                          </div>
+                          {/* Leave Session Button directly underneath */}
+                          <div className="mt-3.5">
+                            <button
+                              type="button"
+                              onClick={() => router.push("/")}
+                              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-3.5 text-[10px] font-bold uppercase tracking-[0.08em] text-rose-300 transition hover:bg-rose-500/20 active:scale-95"
+                            >
+                              <LogOut className="h-3 w-3" />
+                              <span>Leave room</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* QR Code Graphic (Naked directly on the page background) */}
+                        <div className="flex items-center justify-center h-28 w-28 select-none transition duration-300 hover:scale-105 shrink-0">
+                          {joinUrl ? <RoomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400 animate-pulse" />}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
+
+                {/* Floating Expand/Collapse Chevron Pill centered on the bottom border */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsHeaderCollapsed(!isHeaderCollapsed);
+                    setShowSettings(false);
+                  }}
+                  className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 z-10 inline-flex h-6 w-12 items-center justify-center rounded-full border border-white/10 bg-[#040816] text-slate-400 hover:text-sky-300 transition-all duration-300 focus:outline-none hover:scale-110 active:scale-95 shadow-[0_4px_12px_rgba(0,0,0,0.5)] hover:border-sky-500/30"
+                  aria-label={isHeaderCollapsed ? "Expand header" : "Collapse header"}
+                >
+                  <ChevronDown 
+                    className={`h-4.5 w-4.5 text-slate-400 transition-transform duration-500 ease-in-out ${
+                      isHeaderCollapsed ? "rotate-0 animate-pulse text-sky-400" : "rotate-180"
+                    }`} 
+                  />
+                </button>
               </div>
 
-              <div className="flex min-h-0 flex-1 flex-col py-5 lg:overflow-hidden lg:py-0">
-                <div className="z-20 mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 lg:mt-0 lg:pt-4">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">Queue</p>
-                    <h3 className="mt-2 text-xl font-semibold tracking-tight text-slate-50">Up next</h3>
+              <div className="flex min-h-0 flex-1 flex-col pt-3 lg:overflow-hidden lg:pt-0">
+                <div className="z-20 mb-4 py-2 flex shrink-0 items-center justify-between gap-3 lg:mt-0 lg:pt-4">
+                  <div className="flex items-baseline gap-3">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-50">Up next</h3>
+                    <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-400">
+                      <span>{queue.length} songs</span>
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          socketStatus === "connected"
+                            ? "bg-emerald-400"
+                            : socketStatus === "reconnecting" || socketStatus === "connecting"
+                              ? "bg-amber-300"
+                              : "bg-rose-400"
+                        }`}
+                      />
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-sm font-medium text-slate-400">
-                    <span>{queue.length} songs</span>
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        socketStatus === "connected"
-                          ? "bg-emerald-400"
-                          : socketStatus === "reconnecting" || socketStatus === "connecting"
-                            ? "bg-amber-300"
-                            : "bg-rose-400"
-                      }`}
-                    />
-                  </div>
-                </div>
-
-                <div className="z-20 mb-4 shrink-0 bg-transparent py-1 lg:py-3">
                   <button
                     type="button"
                     onClick={() => setShowSearch(true)}
                     disabled={joinState !== "approved"}
-                    className="inline-flex h-14 w-full items-center justify-center gap-2 rounded-[22px] bg-emerald-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
+                    className="inline-flex h-11 items-center gap-2 rounded-xl bg-emerald-500 pl-4 pr-5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 hover:scale-[1.02] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 shrink-0 shadow-md shadow-emerald-500/10"
                   >
-                    <Plus className="h-5 w-5" />
+                    <Plus className="h-4.5 w-4.5" />
                     Add songs
                   </button>
                 </div>
@@ -412,64 +519,7 @@ function GuestRoomInner() {
         </section>
       </main>
 
-      {showSettings ? (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(145deg,rgba(7,18,46,0.96),rgba(3,8,22,0.98))] shadow-[0_30px_90px_rgba(0,0,0,0.65)] p-6 animate-scale-in">
-            <div className="flex items-center justify-between border-b border-white/10 pb-4">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-sky-200/65">Room Info & Prefs</p>
-                <h3 className="mt-1 text-lg font-bold text-slate-50">Room Settings</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSettings(false)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-400 hover:text-white transition"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
 
-            <div className="mt-5 space-y-6">
-              {/* Room Status view */}
-              <section className="space-y-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Room Status</h4>
-                <div className="flex items-center gap-2.5 rounded-xl border border-white/[0.04] bg-white/[0.02] p-3 text-sm">
-                  <div className={`h-2.5 w-2.5 rounded-full ${roomAccess === "open" ? "bg-emerald-400" : "bg-amber-400"}`} />
-                  <span className="font-semibold text-slate-200 capitalize">{roomAccess} Joining</span>
-                  <span className="text-xs text-slate-500">•</span>
-                  <span className="text-xs text-slate-400">
-                    {roomAccess === "open" ? "Anyone can join freely" : "Host approval required"}
-                  </span>
-                </div>
-              </section>
-
-              {/* Vinyl Theme selection (Personal visual preference!) */}
-              <section className="space-y-3">
-                <div>
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Vinyl Glow Backlight</h4>
-                  <p className="mt-1 text-xs text-slate-500">Select your personal neon theme for the spinning deck.</p>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {(["cyberpunk", "aurora", "midnight", "amber"] as const).map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => setGlowTheme(t)}
-                      className={`inline-flex items-center justify-center rounded-xl border px-3 py-2 text-xs font-semibold capitalize transition ${
-                        glowTheme === t
-                          ? "border-sky-400 bg-sky-400/10 text-sky-200 shadow-md"
-                          : "border-white/5 bg-white/[0.03] text-slate-300 hover:bg-white/8"
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       <SearchModal
         open={showSearch}

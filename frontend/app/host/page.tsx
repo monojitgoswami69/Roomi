@@ -11,6 +11,7 @@ import {
   EyeOff,
   FastForward,
   ListMusic,
+  LoaderCircle,
   Lock,
   LockOpen,
   LogOut,
@@ -111,6 +112,10 @@ export default function HostPage() {
   const [socketStatus, setSocketStatus] = useState<
     "connecting" | "connected" | "reconnecting" | "offline"
   >("connecting");
+  /** True while startTrack is in flight (between issuing playUri and confirmed
+   *  SDK playback). The play/pause button renders a spinner and is disabled so
+   *  the user can't trigger Spotify Connect's internal queue mid-load. */
+  const [loadingTrack, setLoadingTrack] = useState(false);
 
   /* Settings Panel & Visual Customisation States */
   const [showSettings, setShowSettings] = useState(false);
@@ -242,6 +247,7 @@ export default function HostPage() {
         // seek(0), and we don't want that residual state to be misread as a
         // ghost track that needs restarting (which would recurse infinitely).
         hostActionRef.current = true;
+        setLoadingTrack(false);
         await playerRef.current?.clearPlayback().catch(() => undefined);
         applyPlaybackState(makePlaybackState(null, 0, false), true);
         window.setTimeout(() => { hostActionRef.current = false; }, 2000);
@@ -260,6 +266,7 @@ export default function HostPage() {
       expectedTrackRef.current = track;
       lastPlayCommandUriRef.current = track.uri;
       hostActionRef.current = true;
+      setLoadingTrack(true);
       setError("");
       applyPlaybackState(makePlaybackState(track, positionMs, false), true);
 
@@ -279,6 +286,7 @@ export default function HostPage() {
         applyPlaybackState(makePlaybackState(track, positionMs, false), true);
         setError(err instanceof Error ? err.message : "Could not start Spotify playback");
       } finally {
+        setLoadingTrack(false);
         window.setTimeout(() => { hostActionRef.current = false; }, 500);
       }
     },
@@ -291,10 +299,12 @@ export default function HostPage() {
     const socket = socketRef.current;
     if (!socket || skipGuardRef.current) return;
     skipGuardRef.current = true;
+    setLoadingTrack(true);
     window.setTimeout(() => { skipGuardRef.current = false; }, 1500);
     socket.emit("playback:next", {}, (ack: { error?: string; currentTrack?: Track | null }) => {
       if (ack?.error) {
         setError(ack.error);
+        setLoadingTrack(false);
         return;
       }
       void startTrack(ack?.currentTrack ?? null, 0);
@@ -486,6 +496,42 @@ export default function HostPage() {
     const id = window.setInterval(update, 500);
     return () => window.clearInterval(id);
   }, [playbackState]);
+
+  /* ───────────── SDK reconciliation poll ─────────────
+   * The SDK can silently drift from the UI: it may stall without firing a
+   * state_changed event, or miss publishing a paused/playing transition.
+   * Every 2.5s we read the SDK directly and correct any divergence — but
+   * only when we're idle (not loading a track, not seeking, not in a
+   * host-initiated action). Without this, the user can see the play button
+   * say "playing" while audio is silent, or vice versa. */
+
+  useEffect(() => {
+    if (!deviceId || !currentTrack) return;
+    const id = window.setInterval(async () => {
+      if (expectedUriRef.current) return;
+      if (isDraggingRef.current) return;
+      if (hostActionRef.current) return;
+      if (loadingTrack) return;
+      const snap = await playerRef.current?.getCurrentState().catch(() => null);
+      if (!snap) return;
+      const sdkUri = snap.track_window?.current_track?.uri ?? "";
+      const expectedTrack = currentTrackRef.current;
+      if (!expectedTrack || sdkUri !== expectedTrack.uri) return;
+      const sdkPlaying = !snap.paused;
+      const uiPlaying = playbackState?.isPlaying ?? false;
+      const sdkPosition = snap.position ?? 0;
+      const uiPosition = uiPlaying && playbackState
+        ? playbackState.startedAtPosition + (Date.now() - playbackState.startedAtTimestamp)
+        : playbackState?.pausedAtPosition ?? 0;
+      // Only reconcile when divergence is meaningful: playing-state flips
+      // or position drift > 1.5s. Smaller drift is just clock skew.
+      const drift = Math.abs(sdkPosition - uiPosition);
+      if (sdkPlaying !== uiPlaying || drift > 1500) {
+        applyPlaybackState(makePlaybackState(expectedTrack, sdkPosition, sdkPlaying), true);
+      }
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [applyPlaybackState, currentTrack, deviceId, loadingTrack, playbackState]);
 
   /* ───────────── Spotify Player ready ───────────── */
 
@@ -765,12 +811,14 @@ export default function HostPage() {
                   </button>
                   <button
                     type="button"
-                    disabled={!hasTrack}
+                    disabled={!hasTrack || loadingTrack}
                     onClick={togglePlayPause}
                     className="deck-btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
-                    aria-label={isPlaying ? "Pause" : "Play"}
+                    aria-label={loadingTrack ? "Loading" : isPlaying ? "Pause" : "Play"}
                   >
-                    {isPlaying ? (
+                    {loadingTrack ? (
+                      <LoaderCircle className="h-7 w-7 animate-spin" />
+                    ) : isPlaying ? (
                       <Pause className="h-7 w-7 fill-current" />
                     ) : (
                       <Play className="ml-1 h-7 w-7 fill-current" />
@@ -778,7 +826,7 @@ export default function HostPage() {
                   </button>
                   <button
                     type="button"
-                    disabled={!hasTrack && queue.length === 0}
+                    disabled={(!hasTrack && queue.length === 0) || loadingTrack}
                     onClick={fetchNextTrack}
                     className="deck-btn disabled:opacity-30 disabled:cursor-not-allowed"
                     aria-label="Next track"
@@ -803,7 +851,7 @@ export default function HostPage() {
         <button
           type="button"
           onClick={() => setShowDrawer(true)}
-          className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-center gap-2 rounded-t-2xl border-t border-white/10 bg-slate-900/95 px-4 py-3.5 backdrop-blur-xl lg:hidden"
+          className="fixed bottom-0 left-4 right-4 z-40 flex h-14 items-center justify-center gap-2 rounded-t-2xl border-t border-x border-white/10 bg-slate-900/95 px-6 backdrop-blur-xl lg:hidden shadow-[0_-8px_24px_rgba(0,0,0,0.4)] active:scale-[0.99] transition-all"
           aria-label="Open queue"
         >
           <ChevronUp className="h-4 w-4 text-slate-400" />
@@ -836,28 +884,26 @@ export default function HostPage() {
           <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-6 lg:h-full lg:overflow-hidden lg:p-4 lg:pl-8">
             <div className="flex min-h-full flex-col lg:h-full lg:overflow-hidden">
               <div className={`z-20 shrink-0 border-b border-white/10 relative transition-all duration-500 ease-in-out ${
-                isHeaderCollapsed ? "pb-3 pt-3" : "pb-6 pt-5"
+                isHeaderCollapsed ? "pb-2.5 pt-2.5" : "pb-3 pt-2.5"
               }`}>
-                {/* Always-Visible Row (Holds compact left-side and right-side controls) */}
-                <div className="flex items-center justify-between w-full select-none">
-                  {/* Left: Compact Room ID & Copy Button (Fades out when expanded) */}
-                  <div className={`flex items-center gap-2.5 transition-all duration-500 ease-in-out ${
-                    isHeaderCollapsed ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-4 pointer-events-none"
-                  }`}>
-                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-200/50">Room ID</span>
-                    <span className="font-mono text-sm font-bold tracking-wider text-sky-300">{roomCode}</span>
-                    <button
-                      type="button"
-                      onClick={copyCode}
-                      className="inline-flex h-6 w-6 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none"
-                      aria-label="Copy room code"
-                    >
-                      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-                    </button>
-                  </div>
+                {/* Top Row: Compact Room ID (Visible and relative in document flow when collapsed, hidden absolute when expanded) */}
+                <div className={`flex items-center gap-2.5 transition-all duration-500 ease-in-out ${
+                  isHeaderCollapsed ? "opacity-100 translate-x-0 relative" : "opacity-0 -translate-x-4 pointer-events-none absolute"
+                }`}>
+                  <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-sky-200/50">Room ID</span>
+                  <span className="font-mono text-sm font-bold tracking-wider text-sky-300">{roomCode}</span>
+                  <button
+                    type="button"
+                    onClick={copyCode}
+                    className="inline-flex h-6 w-6 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none"
+                    aria-label="Copy room code"
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
 
-                  {/* Right: Guest Button + Settings Button + Collapse/Expand Chevron */}
-                  <div className="flex items-center gap-1.5 ml-auto">
+                {/* Floating Settings & Guest Controls (Always absolute at the top-right to prevent taking up vertical height in flow) */}
+                <div className="absolute top-2.5 right-0 z-40 flex items-center gap-2">
                     {/* Connected Guests Button and Popup Dropdown */}
                     <div className="relative">
                       <button
@@ -1185,27 +1231,8 @@ export default function HostPage() {
                           </div>
                         </>
                       )}
-                    </div>
-
-                    {/* Expand/Collapse Chevron Button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsHeaderCollapsed(!isHeaderCollapsed);
-                        setShowSettings(false);
-                        setShowGuestsDropdown(false);
-                      }}
-                      className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-slate-200 transition-all focus:outline-none hover:scale-110 active:scale-95"
-                      aria-label={isHeaderCollapsed ? "Expand header" : "Collapse header"}
-                    >
-                      <ChevronDown 
-                        className={`h-4 w-4 text-slate-400 transition-transform duration-500 ease-in-out ${
-                          isHeaderCollapsed ? "rotate-0 animate-pulse" : "rotate-180"
-                        }`} 
-                      />
-                    </button>
-                  </div>
                 </div>
+              </div>
 
                 {/* Collapsible Content Area (Centred room ID + QR Code) with smooth slide and fade transitions */}
                 <div 
@@ -1216,22 +1243,22 @@ export default function HostPage() {
                     <div className={`transition-all duration-500 ease-in-out transform origin-top ${
                       isHeaderCollapsed ? "opacity-0 -translate-y-4 scale-95 pointer-events-none" : "opacity-100 translate-y-0 scale-100"
                     }`}>
-                      {/* Centered Group: Room ID, Divider, and QR Code */}
-                      <div className="flex flex-col sm:flex-row items-center justify-center gap-6 py-5 mt-4 w-full border-t border-white/5">
+                      {/* Centered Group: Room ID and QR Code */}
+                      <div className="flex flex-col sm:flex-row items-center justify-center gap-10 py-1.5 w-full">
                         {/* Room ID and End Session button */}
                         <div className="flex flex-col items-center sm:items-start text-center sm:text-left justify-center">
                           <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-sky-200/50">Room ID</p>
-                          <div className="mt-1 flex items-center gap-2">
-                            <h2 className="font-mono text-4xl sm:text-5xl font-extrabold tracking-[0.2em] text-sky-300">
+                          <div className="mt-1 flex items-end gap-0.5">
+                            <h2 className="font-mono text-5xl sm:text-6xl font-black tracking-[0.2em] text-sky-300">
                               {roomCode}
                             </h2>
                             <button
                               type="button"
                               onClick={copyCode}
-                              className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none active:scale-90"
+                              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:text-sky-300 hover:bg-white/[0.05] transition-all focus:outline-none active:scale-90 -ml-[0.24em] mb-1.5"
                               aria-label="Copy room code"
                             >
-                              {copied ? <Check className="h-4.5 w-4.5 text-emerald-400" /> : <Copy className="h-4.5 w-4.5" />}
+                              {copied ? <Check className="h-5.5 w-5.5 text-emerald-400" /> : <Copy className="h-5.5 w-5.5" />}
                             </button>
                           </div>
                           {/* End Session Button directly underneath */}
@@ -1247,9 +1274,6 @@ export default function HostPage() {
                           </div>
                         </div>
 
-                        {/* Vertical Separator Pill */}
-                        <div className="hidden sm:block h-14 w-[1px] bg-white/10" />
-
                         {/* QR Code Graphic (Naked directly on the page background) */}
                         <div className="flex items-center justify-center h-28 w-28 select-none transition duration-300 hover:scale-105 shrink-0">
                           {joinUrl ? <RoomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400 animate-pulse" />}
@@ -1258,35 +1282,49 @@ export default function HostPage() {
                     </div>
                   </div>
                 </div>
+
+                {/* Floating Expand/Collapse Chevron Pill centered on the bottom border */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsHeaderCollapsed(!isHeaderCollapsed);
+                    setShowSettings(false);
+                    setShowGuestsDropdown(false);
+                  }}
+                  className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 z-10 inline-flex h-6 w-12 items-center justify-center rounded-full border border-white/10 bg-[#040816] text-slate-400 hover:text-sky-300 transition-all duration-300 focus:outline-none hover:scale-110 active:scale-95 shadow-[0_4px_12px_rgba(0,0,0,0.5)] hover:border-sky-500/30"
+                  aria-label={isHeaderCollapsed ? "Expand header" : "Collapse header"}
+                >
+                  <ChevronDown 
+                    className={`h-4.5 w-4.5 text-slate-400 transition-transform duration-500 ease-in-out ${
+                      isHeaderCollapsed ? "rotate-0 animate-pulse text-sky-400" : "rotate-180"
+                    }`} 
+                  />
+                </button>
               </div>
 
-              <div className="flex min-h-0 flex-1 flex-col py-5 lg:overflow-hidden lg:py-0">
-                <div className="z-10 mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 lg:mt-0 lg:pt-4">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">Queue</p>
-                    <h3 className="mt-2 text-xl font-semibold tracking-tight text-slate-50">Up next</h3>
+              <div className="flex min-h-0 flex-1 flex-col pt-3 lg:overflow-hidden lg:pt-0">
+                <div className="z-10 mb-4 py-2 flex shrink-0 items-center justify-between gap-3 lg:mt-0 lg:pt-4">
+                  <div className="flex items-baseline gap-3">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-50">Up next</h3>
+                    <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-400">
+                      <span>{queue.length} songs</span>
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          socketStatus === "connected"
+                            ? "bg-emerald-400"
+                            : socketStatus === "reconnecting" || socketStatus === "connecting"
+                              ? "bg-amber-300"
+                              : "bg-rose-400"
+                        }`}
+                      />
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-sm font-medium text-slate-400">
-                    <span>{queue.length} songs</span>
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        socketStatus === "connected"
-                          ? "bg-emerald-400"
-                          : socketStatus === "reconnecting" || socketStatus === "connecting"
-                            ? "bg-amber-300"
-                            : "bg-rose-400"
-                      }`}
-                    />
-                  </div>
-                </div>
-
-                <div className="z-10 mb-4 shrink-0 bg-transparent py-1 lg:py-3">
                   <button
                     type="button"
                     onClick={() => setShowSearch(true)}
-                    className="inline-flex h-14 w-full items-center justify-center gap-2 rounded-[22px] bg-emerald-500 px-4 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 lg:w-auto"
+                    className="inline-flex h-11 items-center gap-2 rounded-xl bg-emerald-500 pl-4 pr-5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 hover:scale-[1.02] active:scale-95 shrink-0 shadow-md shadow-emerald-500/10"
                   >
-                    <Plus className="h-5 w-5" />
+                    <Plus className="h-4.5 w-4.5" />
                     Add songs
                   </button>
                 </div>

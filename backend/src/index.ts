@@ -96,6 +96,11 @@ const rooms = new Map<string, Room>();
 const queueOrder = new Map<string, Map<string, number>>();
 const presence = new Map<string, Map<string, PresenceEntry>>();
 const socketIndex = new Map<string, { roomCode: string; guestId: string; isHost: boolean }>();
+// Per-room cooldown for playback:next. Defends against duplicate emits from the
+// host (e.g. SDK + watchdog both firing onTrackEnd, or a double-click race) which
+// would otherwise pop two items off the queue for a single user-intent skip.
+const lastNextAt = new Map<string, number>();
+const NEXT_COOLDOWN_MS = 1500;
 
 /* ──────────────────────────── Helpers ──────────────────────────── */
 
@@ -183,6 +188,7 @@ function deleteRoom(code: string): void {
   rooms.delete(normalized);
   queueOrder.delete(normalized);
   presence.delete(normalized);
+  lastNextAt.delete(normalized);
 }
 
 function sortQueue(room: Room): void {
@@ -737,6 +743,16 @@ io.on("connection", (socket) => {
     safe(() => {
       const room = requireHost(ack);
       if (!room) return;
+      // Per-room cooldown: a single user-intent skip can race with the
+      // SDK + watchdog both detecting end-of-track. Without this gate we'd
+      // pop the next two items from the queue for one intent. Return the
+      // current track unchanged on duplicate within the window.
+      const last = lastNextAt.get(room.roomCode) ?? 0;
+      if (Date.now() - last < NEXT_COOLDOWN_MS) {
+        ack?.({ ok: true, currentTrack: room.currentTrack, playback: room.playback });
+        return;
+      }
+      lastNextAt.set(room.roomCode, Date.now());
       const track = claimNextTrack(room);
       broadcastRoom(io, room);
       ack?.({ ok: true, currentTrack: track, playback: room.playback });

@@ -225,7 +225,12 @@ const Player = forwardRef<PlayerControls, PlayerProps>(function Player(
       if (!uri) return;
       const deviceId = activeDeviceIdRef.current;
       if (!deviceId) throw new Error("Spotify player is not ready yet");
-      suppressTrackEndUntilRef.current = Date.now() + 1500;
+      // Long suppression: the SDK can fire a stale state_change for the
+      // *previous* track (paused=true, position=0) several seconds AFTER
+      // we issue playUri. That looks identical to a natural track-end
+      // signal and would otherwise trigger an extra skip. We refresh the
+      // window again after the play API call returns.
+      suppressTrackEndUntilRef.current = Date.now() + 4000;
       await playerRef.current?.activateElement?.().catch(() => undefined);
       await transferToDevice(deviceId, false);
       for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -238,6 +243,7 @@ const Player = forwardRef<PlayerControls, PlayerProps>(function Player(
               position_ms: Math.max(0, Math.floor(positionMs)),
             }),
           });
+          suppressTrackEndUntilRef.current = Date.now() + 4000;
           return;
         } catch (error) {
           const status = (error as Error & { status?: number }).status;
@@ -249,11 +255,11 @@ const Player = forwardRef<PlayerControls, PlayerProps>(function Player(
     },
     pause: async () => {
       if (!playerRef.current) return;
-      suppressTrackEndUntilRef.current = Date.now() + 1500;
+      suppressTrackEndUntilRef.current = Date.now() + 2000;
       await playerRef.current.pause();
     },
     clearPlayback: async () => {
-      suppressTrackEndUntilRef.current = Date.now() + 1500;
+      suppressTrackEndUntilRef.current = Date.now() + 4000;
       await playerRef.current?.pause().catch(() => undefined);
       await playerRef.current?.seek(0).catch(() => undefined);
       // Reset state-tracking refs so the SDK's residual `track_window` state
@@ -367,11 +373,14 @@ const Player = forwardRef<PlayerControls, PlayerProps>(function Player(
           trackEndFiredRef.current = false;
         }
 
-        // Natural-end detection: the SDK snaps position→0 and sets paused=true
-        // for the SAME current_track when a track completes (and there's no
-        // Spotify-side queue). Require that we were previously well into the
-        // track to avoid false positives from a fresh paused load.
+        // Natural-end detection: when a track completes with nothing in
+        // Spotify's own queue, the SDK either (a) snaps position→0 and sets
+        // paused=true, or (b) pauses at position=duration. We accept both.
+        // Require that we were previously well into the track to avoid false
+        // positives from a fresh paused load.
         const positionNearZero = state.position <= 200;
+        const positionNearEnd =
+          state.duration > 0 && state.position >= state.duration - 500;
         const wasPlaying = lastPositionRef.current > 1000;
         const sameTrack = currentTrackUri.length > 0 && currentTrackUri === lastTrackUriRef.current;
         const isTrackEnd =
@@ -379,7 +388,7 @@ const Player = forwardRef<PlayerControls, PlayerProps>(function Player(
           Date.now() > suppressTrackEndUntilRef.current &&
           !trackEndFiredRef.current &&
           sameTrack &&
-          positionNearZero &&
+          (positionNearZero || positionNearEnd) &&
           wasPlaying;
 
         if (state.paused) {
@@ -398,27 +407,34 @@ const Player = forwardRef<PlayerControls, PlayerProps>(function Player(
         lastTrackUriRef.current = currentTrackUri;
 
         // If we're now actively playing, schedule the natural-end watchdog
-        // at the expected end + a 1s grace period. When it fires, we double
-        // check that the SDK has stalled at the end and emit onTrackEnd if
-        // the SDK never fired its own end signal.
+        // at the expected end + a 1s grace period. When it fires, we poll
+        // the SDK; if it's stalled at the end (regardless of paused state —
+        // Spotify sometimes leaves the SDK in "playing" indefinitely when
+        // there's nothing in its own queue), emit onTrackEnd. If the SDK
+        // hasn't quite reached the end yet, re-arm a short retry so we
+        // don't miss it.
         if (!state.paused && state.duration > 0 && currentTrackUri) {
           const remaining = Math.max(0, state.duration - state.position);
-          watchdogTimer = window.setTimeout(async () => {
+          const poll = async () => {
             watchdogTimer = null;
             if (trackEndFiredRef.current) return;
             const snap = await playerRef.current?.getCurrentState().catch(() => null);
             const snapUri = snap?.track_window?.current_track?.uri ?? "";
             if (snapUri !== currentTrackUri) return;
-            const atEnd =
-              snap !== null &&
-              snap !== undefined &&
-              snap.duration > 0 &&
-              snap.position >= snap.duration - 500;
-            if (atEnd && snap.paused && !trackEndFiredRef.current) {
+            if (!snap || snap.duration <= 0) return;
+            const atEnd = snap.position >= snap.duration - 500;
+            if (atEnd) {
+              if (trackEndFiredRef.current) return;
               trackEndFiredRef.current = true;
               cb.onTrackEnd.current?.();
+              return;
             }
-          }, remaining + 1000);
+            // SDK reports still playing but not at end yet — likely a clock
+            // skew or buffering pause. Re-arm based on snap's own remaining.
+            const snapRemaining = Math.max(500, snap.duration - snap.position);
+            watchdogTimer = window.setTimeout(poll, snapRemaining + 500);
+          };
+          watchdogTimer = window.setTimeout(poll, remaining + 1000);
         }
       });
 

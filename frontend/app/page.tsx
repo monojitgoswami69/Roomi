@@ -372,7 +372,7 @@ export default function HomePage() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   maxLength={24}
-                  placeholder="Your Display Name"
+                  placeholder="YOUR DISPLAY NAME"
                   className="minimal-input"
                   style={{
                     width: "100%",

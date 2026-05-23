@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Check,
   CheckCircle2,
   LoaderCircle,
   Music,
+  Plus,
   RotateCw,
   Search,
-  Sparkles,
   X,
 } from "lucide-react";
 import type { Track } from "@/lib/types";
@@ -39,8 +40,6 @@ const MOOD_CATEGORIES: MoodCategory[] = [
     queries: ["chill vibes", "lo-fi chill", "chill acoustic", "relaxing songs"] },
   { id: "happy", label: "Happy", emoji: "☀️", color: "#FBBF24", colorEnd: "#F97316",
     queries: ["happy songs", "feel good music", "upbeat pop", "good vibes playlist"] },
-  { id: "sad", label: "Sad", emoji: "🌧️", color: "#6366F1", colorEnd: "#3B82F6",
-    queries: ["sad songs", "emotional songs", "heartbreak songs", "melancholy music"] },
   { id: "hiphop", label: "Hip-Hop", emoji: "🔥", color: "#EF4444", colorEnd: "#DC2626",
     queries: ["hip hop hits", "rap songs", "hip hop bangers", "top rap"] },
   { id: "romantic", label: "Romance", emoji: "💖", color: "#EC4899", colorEnd: "#F472B6",
@@ -138,6 +137,23 @@ export default function SearchModal({
   const [homeLoading, setHomeLoading] = useState(false);
   const [initialLoaded, setInitialLoaded] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const [shouldRender, setShouldRender] = useState(open);
+  const [isClosing, setIsClosing] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setShouldRender(true);
+      setIsClosing(false);
+    } else if (shouldRender) {
+      setIsClosing(true);
+      const timer = setTimeout(() => {
+        setShouldRender(false);
+        setIsClosing(false);
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [open, shouldRender]);
 
   const blockedTrackIds = useMemo(() => {
     const ids = new Set(queuedTrackIds);
@@ -339,37 +355,29 @@ export default function SearchModal({
   };
 
   const isSearching = query.trim().length > 0;
-  const displayTracks = isSearching ? results : moodTracks;
+  const rawDisplayTracks = isSearching ? results : moodTracks;
+  const displayTracks = rawDisplayTracks.filter((track, idx, arr) => arr.findIndex((t) => t.id === track.id) === idx);
   const isLoadingTracks = isSearching ? loading : moodLoading;
   const activeMoodData = MOOD_CATEGORIES.find((c) => c.id === activeMood);
 
-  if (!open) return null;
+  if (!shouldRender) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-xl p-4 sm:p-6 md:p-10 animate-fade-in">
-      <div className="relative grid h-[85vh] max-h-[780px] w-full max-w-[92vw] lg:max-w-[75vw] gap-0 overflow-hidden rounded-[28px] border-2 border-slate-700/80 bg-gradient-to-b from-[#1b253b] to-[#0f1629] shadow-[0_30px_70px_-10px_rgba(0,0,0,0.98),0_0_50px_rgba(56,189,248,0.06)] grid-rows-[1.3fr_0.7fr] md:grid-rows-none md:grid-cols-[minmax(0,1.35fr)_360px]">
+    <div
+      className={`fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10 ${
+        isClosing ? "animate-backdrop-exit" : "animate-backdrop-enter"
+      }`}
+      onClick={handleClose}
+    >
+      <div
+        className={`relative grid h-[88vh] max-h-[840px] w-full max-w-[94vw] lg:max-w-[80vw] gap-0 overflow-hidden rounded-[28px] border-2 border-slate-700/80 bg-gradient-to-b from-[#111827] to-[#0a0f1a] shadow-[0_30px_70px_-10px_rgba(0,0,0,0.98),0_0_50px_rgba(56,189,248,0.06)] grid-rows-[1.3fr_0.7fr] md:grid-rows-none md:grid-cols-[minmax(0,1.35fr)_360px] ${
+          isClosing ? "animate-modal-exit" : "animate-modal-enter"
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex min-h-0 flex-col">
-          <div className="border-b border-white/[0.08] px-6 pb-5 pt-6 sm:px-8 sm:pt-8">
-            <div className="mb-5 flex items-center justify-between gap-4">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.26em] text-sky-400/90">
-                  Add To Queue
-                </p>
-                <h2 className="mt-1.5 text-3xl font-extrabold tracking-tight text-white">
-                  Browse &amp; Discover
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={handleClose}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.02] text-slate-400 transition-all hover:bg-white/[0.08] hover:text-white"
-                aria-label="Close"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="flex items-center gap-3.5 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 transition-all focus-within:border-white/20 focus-within:bg-white/[0.05]">
+          <div className="px-6 pb-4 pt-5 sm:px-8">
+            <div className="flex items-center gap-3.5 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 transition-all focus-within:border-white/20 focus-within:bg-white/[0.05]">
               <Search className="h-5 w-5 shrink-0 text-slate-400" />
               <input
                 ref={inputRef}
@@ -383,7 +391,7 @@ export default function SearchModal({
                   }
                 }}
                 placeholder="Search songs, artists..."
-                className="w-full bg-transparent text-base text-white outline-none placeholder:text-slate-450"
+                className="w-full border-none bg-transparent text-base text-white outline-none ring-0 focus:border-none focus:outline-none focus:ring-0 placeholder:text-slate-450 search-input-no-ring"
                 style={{ caretColor: "#64748b" }}
               />
               {query ? (
@@ -402,7 +410,7 @@ export default function SearchModal({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar px-6 py-5 sm:px-8">
+          <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar px-6 py-3 sm:px-8">
             {error ? (
               <p className="mb-4 rounded-xl border border-rose-500/10 bg-rose-500/5 px-4 py-2.5 text-sm text-rose-350">
                 {error}
@@ -424,9 +432,6 @@ export default function SearchModal({
                 /* Home Browse Page */
                 <div className="space-y-8">
                   <div>
-                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
-                      Browse All Vibes
-                    </h3>
                     <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
                       {MOOD_CATEGORIES.map((mood) => (
                         <button
@@ -448,7 +453,6 @@ export default function SearchModal({
 
                   <div>
                     <div className="mb-4 flex items-center gap-2">
-                      <Sparkles className="h-4.5 w-4.5 text-slate-450" />
                       <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400">
                         Suggested for you
                       </h3>
@@ -538,7 +542,7 @@ export default function SearchModal({
                     </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center text-center py-10">
-                      <Sparkles className="h-6 w-6 text-slate-700" />
+                      <Music className="h-6 w-6 text-slate-700" />
                       <p className="mt-3 text-base text-slate-500">No suggestions available right now.</p>
                     </div>
                   )}
@@ -554,72 +558,75 @@ export default function SearchModal({
               /* Search Results Layout (Spotify Style) */
               <div className="space-y-8">
                 {/* Two Column Section */}
-                <div className="grid gap-6 md:grid-cols-[1.1fr_1.4fr]">
+                <div className="grid items-stretch gap-6 md:grid-cols-[1.1fr_1.4fr]">
                   {/* Left: Top Result Card */}
-                  <div>
+                  <div className="flex flex-col">
                     <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
                       Top Result
                     </h3>
                     {displayTracks[0] && (
-                      <div
-                        className="relative h-[240px] w-full rounded-2xl border border-white/10 bg-white/[0.03] p-6 flex flex-col justify-between group hover:bg-white/[0.05] hover:border-white/15 transition-all duration-300"
+                      <button
+                        type="button"
+                        disabled={blockedTrackIds.has(displayTracks[0].id)}
+                        onClick={() => toggleSelection(displayTracks[0])}
+                        className={`relative w-full flex-1 rounded-2xl border p-5 flex flex-col justify-between group transition-all duration-300 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
+                          selectedIds.has(displayTracks[0].id)
+                            ? "border-emerald-500/30 bg-emerald-500/[0.06] hover:bg-emerald-500/[0.1]"
+                            : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06] hover:border-white/15"
+                        }`}
                       >
-                        <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-4">
                           {displayTracks[0].albumArt ? (
                             <img
                               src={displayTracks[0].albumArt}
                               alt={displayTracks[0].title}
-                              className="h-24 w-24 rounded-xl object-cover border border-white/10 shadow-md group-hover:scale-105 transition-all duration-300"
+                              className="h-28 w-28 rounded-xl object-cover border border-white/10 shadow-lg group-hover:scale-105 transition-all duration-300"
                             />
                           ) : (
-                            <div className="flex h-24 w-24 items-center justify-center rounded-xl border border-white/10 bg-slate-900/60">
+                            <div className="flex h-28 w-28 items-center justify-center rounded-xl border border-white/10 bg-slate-900/60">
                               <Music className="h-10 w-10 text-slate-500" />
                             </div>
                           )}
-                          
-                          {/* Staged Pick Button */}
-                          <button
-                            type="button"
-                            disabled={blockedTrackIds.has(displayTracks[0].id)}
-                            onClick={() => toggleSelection(displayTracks[0])}
-                            className={`inline-flex h-9 px-4 items-center justify-center gap-1.5 rounded-full border text-xs font-bold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-30 ${
-                              selectedIds.has(displayTracks[0].id)
-                                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                                : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white"
+                        </div>
+
+                        <div className="flex items-end justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xl font-extrabold text-white tracking-tight">
+                              {displayTracks[0].title}
+                            </p>
+                            <p className="truncate text-sm text-slate-400 font-medium mt-1">
+                              {displayTracks[0].artist}
+                            </p>
+                          </div>
+                          <span
+                            className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full shadow-lg transition-all duration-200 group-hover:scale-110 ${
+                              blockedTrackIds.has(displayTracks[0].id)
+                                ? "bg-slate-700 text-slate-400"
+                                : selectedIds.has(displayTracks[0].id)
+                                  ? "bg-emerald-500 text-slate-950"
+                                  : "bg-white text-slate-950"
                             }`}
                           >
                             {blockedTrackIds.has(displayTracks[0].id) ? (
-                              "In queue"
+                              <Check className="h-5 w-5" />
                             ) : selectedIds.has(displayTracks[0].id) ? (
-                              <>
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                Staged
-                              </>
+                              <CheckCircle2 className="h-5 w-5" />
                             ) : (
-                              "Stage Track"
+                              <Plus className="h-5 w-5" />
                             )}
-                          </button>
+                          </span>
                         </div>
-
-                        <div className="min-w-0">
-                          <p className="truncate text-xl font-extrabold text-white tracking-tight">
-                            {displayTracks[0].title}
-                          </p>
-                          <p className="truncate text-sm text-slate-400 font-medium mt-1.5">
-                            {displayTracks[0].artist}
-                          </p>
-                        </div>
-                      </div>
+                      </button>
                     )}
                   </div>
 
                   {/* Right: Songs Matches list */}
-                  <div>
+                  <div className="flex flex-col">
                     <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
                       Songs
                     </h3>
-                    <div className="space-y-1">
-                      {displayTracks.slice(1, 5).map((track) => (
+                    <div className="flex-1 flex flex-col justify-between space-y-1">
+                      {displayTracks.slice(1, 4).map((track) => (
                         <TrackCard
                           key={track.id}
                           track={track}
@@ -633,13 +640,13 @@ export default function SearchModal({
                 </div>
 
                 {/* Below: All Other Matches */}
-                {displayTracks.length > 5 && (
+                {displayTracks.length > 4 && (
                   <div>
                     <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
                       More Matches
                     </h3>
                     <div className="space-y-1.5">
-                      {displayTracks.slice(5).map((track) => (
+                      {displayTracks.slice(4).map((track) => (
                         <TrackCard
                           key={track.id}
                           track={track}
@@ -657,16 +664,26 @@ export default function SearchModal({
         </div>
 
         <aside className="flex min-h-0 flex-col border-t border-white/[0.08] bg-white/[0.005] p-6 md:border-l md:border-white/[0.08] md:border-t-0">
-          <div className="mb-5">
-            <p className="text-xs font-bold uppercase tracking-widest text-sky-400/90">
-              Your picks
-            </p>
-            <h3 className="mt-2 text-2xl font-extrabold tracking-tight text-white">
-              {selectedTracks.length}{" "}
-              <span className="text-slate-500 font-normal text-lg">
-                {selectedTracks.length === 1 ? "song" : "songs"}
-              </span>
-            </h3>
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-sky-400/90">
+                Your picks
+              </p>
+              <h3 className="mt-1 text-xl font-extrabold tracking-tight text-white">
+                {selectedTracks.length}{" "}
+                <span className="text-slate-500 font-normal text-base">
+                  {selectedTracks.length === 1 ? "song" : "songs"}
+                </span>
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.02] text-slate-400 transition-all hover:bg-white/[0.08] hover:text-white"
+              aria-label="Close"
+            >
+              <X className="h-4.5 w-4.5" />
+            </button>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar">
