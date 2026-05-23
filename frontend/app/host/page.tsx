@@ -297,7 +297,12 @@ export default function HostPage() {
         setError(err instanceof Error ? err.message : "Could not start Spotify playback");
       } finally {
         setLoadingTrack(false);
-        window.setTimeout(() => { hostActionRef.current = false; }, 500);
+        // Hold hostActionRef for longer than waitForConfirmedPlayback's
+        // success path: the SDK keeps emitting residual player_state_changed
+        // events with the previous URI for ~2-3s after we transition. If we
+        // drop the guard at 500ms, the ghost detector wakes up and triggers
+        // another fetchNextTrack on those stale events.
+        window.setTimeout(() => { hostActionRef.current = false; }, 2500);
       }
     },
     [applyPlaybackState, waitForConfirmedPlayback],
@@ -305,10 +310,12 @@ export default function HostPage() {
 
   /* ───────────── Advance to next track ───────────── */
 
+  const lastAdvanceAtRef = useRef(0);
   const fetchNextTrack = useCallback(() => {
     const socket = socketRef.current;
     if (!socket || skipGuardRef.current) return;
     skipGuardRef.current = true;
+    lastAdvanceAtRef.current = Date.now();
     setLoadingTrack(true);
     window.setTimeout(() => { skipGuardRef.current = false; }, 1500);
     socket.emit("playback:next", {}, (ack: { error?: string; currentTrack?: Track | null }) => {
@@ -620,15 +627,19 @@ export default function HostPage() {
     const ourTrack = currentTrackRef.current;
     if (expected === sdkTrackUri || ourTrack?.uri === sdkTrackUri) return;
     if (expected || hostActionRef.current) return;
-    // Only treat the SDK URI as a ghost when we have an active track to
-    // compare against. During idle (currentTrack === null), the SDK's
-    // track_window retains the previous URI even after clearPlayback —
-    // that's residual state, not a phantom queue, and the empty-queue
-    // effect above already handles the idle clear once.
     if (!ourTrack) return;
-    // Spotify Connect can resurface a phantom internal queue. Roomi is the
-    // authoritative queue, so stop the ghost and advance to our next track.
-    if (Date.now() - lastGhostClearAtRef.current < 3000) return;
+    // Suppress for a window after any track-advance we just triggered.
+    // Spotify's SDK keeps re-emitting state_changed events with the previous
+    // track URI for several seconds after a transition; without this gate,
+    // those stale events look like "Spotify Connect autoplayed something
+    // else" and trigger another fetchNextTrack → infinite ping-pong between
+    // the previous and the new track, each call burning Spotify API quota.
+    if (Date.now() - lastAdvanceAtRef.current < 6000) return;
+    // The SDK sometimes re-reports a track we *previously* played as the
+    // "current" track during transitions. Treat that as residual state, not
+    // a genuine autoplay-past-our-queue signal.
+    if (lastPlayCommandUriRef.current && sdkTrackUri === lastPlayCommandUriRef.current) return;
+    if (Date.now() - lastGhostClearAtRef.current < 8000) return;
     lastGhostClearAtRef.current = Date.now();
     void playerRef.current?.pause().catch(() => undefined);
     if (queueRef.current.length > 0) {

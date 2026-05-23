@@ -1,0 +1,1040 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+require("dotenv/config");
+const express_1 = __importDefault(require("express"));
+const http_1 = require("http");
+const socket_io_1 = require("socket.io");
+/* ────────────────────────── Configuration ────────────────────────── */
+const PORT = Number(process.env.PORT ?? 4001);
+const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
+const STALE_PRESENCE_MS = 30_000;
+const CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const SHARED_SECRET = (process.env.SOCKET_PROVIDER_SECRET ?? "").trim();
+const CORS_ORIGINS = (process.env.CORS_ORIGIN ?? "http://127.0.0.1:3000,http://localhost:3000")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+/* ─────────────────────── In-memory state ─────────────────────── */
+const rooms = new Map();
+const queueOrder = new Map();
+const presence = new Map();
+const socketIndex = new Map();
+// Per-room cooldown for playback:next. Defends against duplicate emits from the
+// host (e.g. SDK + watchdog both firing onTrackEnd, or a double-click race) which
+// would otherwise pop two items off the queue for a single user-intent skip.
+const lastNextAt = new Map();
+const NEXT_COOLDOWN_MS = 1500;
+const SKIP_VOTE_DURATION_MS = 10_000;
+const KICK_VOTE_DURATION_MS = 10_000;
+const skipVoteTimers = new Map();
+const kickVoteTimers = new Map();
+/* ──────────────────────────── Helpers ──────────────────────────── */
+const now = () => Date.now();
+const normalizeCode = (value) => typeof value === "string" ? value.trim().toUpperCase() : "";
+const trimString = (value, fallback = "") => typeof value === "string" ? value.trim() || fallback : fallback;
+function emptyPlayback() {
+    return {
+        isPlaying: false,
+        startedAtTimestamp: 0,
+        startedAtPosition: 0,
+        pausedAtPosition: 0,
+        duration: 0,
+        track: null,
+    };
+}
+function getRoom(code) {
+    return rooms.get(normalizeCode(code));
+}
+function touchRoom(room) {
+    room.lastActivity = now();
+}
+function getQueueOrder(code) {
+    let order = queueOrder.get(code);
+    if (!order) {
+        order = new Map();
+        queueOrder.set(code, order);
+    }
+    return order;
+}
+function getPresence(code) {
+    let map = presence.get(code);
+    if (!map) {
+        map = new Map();
+        presence.set(code, map);
+    }
+    return map;
+}
+function generateCode() {
+    let code = "";
+    do {
+        code = "";
+        for (let i = 0; i < 6; i += 1) {
+            code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+        }
+    } while (rooms.has(code));
+    return code;
+}
+function createRoom(input) {
+    const roomCode = generateCode();
+    const room = {
+        roomCode,
+        hostId: input.hostId,
+        accessToken: input.accessToken,
+        refreshToken: input.refreshToken,
+        deviceId: "",
+        access: "open",
+        queue: [],
+        currentTrack: null,
+        playback: emptyPlayback(),
+        guests: {},
+        pendingGuests: {},
+        cohosts: [],
+        skipVote: null,
+        kickVote: null,
+        createdAt: now(),
+        lastActivity: now(),
+    };
+    rooms.set(roomCode, room);
+    queueOrder.set(roomCode, new Map());
+    presence.set(roomCode, new Map());
+    return room;
+}
+function deleteRoom(code) {
+    const normalized = normalizeCode(code);
+    rooms.delete(normalized);
+    queueOrder.delete(normalized);
+    presence.delete(normalized);
+    lastNextAt.delete(normalized);
+    const skipTimer = skipVoteTimers.get(normalized);
+    if (skipTimer) {
+        clearTimeout(skipTimer);
+        skipVoteTimers.delete(normalized);
+    }
+    const kickTimer = kickVoteTimers.get(normalized);
+    if (kickTimer) {
+        clearTimeout(kickTimer);
+        kickVoteTimers.delete(normalized);
+    }
+}
+function sortQueue(room) {
+    const order = getQueueOrder(room.roomCode);
+    room.queue.sort((a, b) => {
+        if (a.score !== b.score)
+            return b.score - a.score;
+        const aAt = order.get(a.track.id) ?? Number.MAX_SAFE_INTEGER;
+        const bAt = order.get(b.track.id) ?? Number.MAX_SAFE_INTEGER;
+        return aAt - bAt;
+    });
+}
+function isTrackInUse(room, trackId) {
+    if (room.currentTrack?.id === trackId)
+        return true;
+    return room.queue.some((item) => item.track.id === trackId);
+}
+function canInteract(room, guestId) {
+    return guestId === room.hostId || Boolean(room.guests[guestId]);
+}
+function isHostOrCohost(room, guestId) {
+    return guestId === room.hostId || room.cohosts.includes(guestId);
+}
+function isValidTrack(track) {
+    if (!track || typeof track !== "object")
+        return false;
+    const t = track;
+    return (typeof t.id === "string" &&
+        typeof t.uri === "string" &&
+        typeof t.title === "string" &&
+        typeof t.artist === "string" &&
+        typeof t.albumArt === "string" &&
+        typeof t.durationMs === "number" &&
+        t.id.length > 0 &&
+        t.uri.length > 0);
+}
+function getLiveGuests(room) {
+    const roomPresence = presence.get(room.roomCode);
+    if (!roomPresence)
+        return {};
+    const live = {};
+    for (const [guestId, displayName] of Object.entries(room.guests)) {
+        if (guestId === room.hostId)
+            continue;
+        const entry = roomPresence.get(guestId);
+        if (entry?.sockets.size)
+            live[guestId] = displayName;
+    }
+    return live;
+}
+function buildPublicState(room) {
+    return {
+        roomCode: room.roomCode,
+        hostId: room.hostId,
+        access: room.access,
+        queue: room.queue,
+        currentTrack: room.currentTrack,
+        playback: room.playback,
+        guests: getLiveGuests(room),
+        pendingGuests: room.pendingGuests,
+        guestCount: Object.keys(getLiveGuests(room)).length,
+        cohosts: room.cohosts.filter((id) => Boolean(room.guests[id])),
+        skipVote: room.skipVote,
+        kickVote: room.kickVote,
+    };
+}
+function broadcastRoom(io, room) {
+    io.to(room.roomCode).emit("room:state", buildPublicState(room));
+}
+/* ────────────────────────── Mutations ────────────────────────── */
+function requestGuestAccess(room, guestId, displayName) {
+    if (guestId === room.hostId)
+        return "approved";
+    if (room.guests[guestId]) {
+        touchRoom(room);
+        return "approved";
+    }
+    if (room.access === "open") {
+        room.guests[guestId] = displayName;
+        delete room.pendingGuests[guestId];
+        touchRoom(room);
+        return "approved";
+    }
+    room.pendingGuests[guestId] = displayName;
+    touchRoom(room);
+    return "pending";
+}
+function moderateGuest(room, intent, guestId) {
+    if (intent === "approve-guest") {
+        const name = room.pendingGuests[guestId];
+        if (!name)
+            return;
+        room.guests[guestId] = name;
+        delete room.pendingGuests[guestId];
+    }
+    else if (intent === "reject-guest") {
+        delete room.pendingGuests[guestId];
+    }
+    else if (intent === "kick-guest") {
+        delete room.pendingGuests[guestId];
+        delete room.guests[guestId];
+        room.cohosts = room.cohosts.filter((id) => id !== guestId);
+        if (room.kickVote?.targetId === guestId) {
+            cancelKickVote(room);
+        }
+        pruneOverDownvoted(room);
+    }
+    touchRoom(room);
+}
+function setRoomAccess(room, access) {
+    room.access = access;
+    if (access === "open") {
+        for (const [guestId, displayName] of Object.entries(room.pendingGuests)) {
+            room.guests[guestId] = displayName;
+        }
+        room.pendingGuests = {};
+    }
+    touchRoom(room);
+}
+function setCurrentTrack(room, track) {
+    if (room.currentTrack?.id !== track?.id) {
+        cancelSkipVote(room);
+    }
+    room.currentTrack = track;
+    if (!track) {
+        room.playback = emptyPlayback();
+    }
+    else {
+        room.playback = { ...emptyPlayback(), track, duration: track.durationMs };
+    }
+    touchRoom(room);
+}
+function selectNextTrack(room) {
+    if (!room.queue.length)
+        return null;
+    return room.queue.find((item) => item.score >= 0) ?? room.queue[0] ?? null;
+}
+function claimNextTrack(room) {
+    const nextItem = selectNextTrack(room);
+    if (!nextItem) {
+        setCurrentTrack(room, null);
+        return null;
+    }
+    room.queue = room.queue.filter((item) => item.track.id !== nextItem.track.id);
+    getQueueOrder(room.roomCode).delete(nextItem.track.id);
+    setCurrentTrack(room, nextItem.track);
+    return nextItem.track;
+}
+function addTracks(room, guestId, tracks) {
+    let added = 0;
+    for (const raw of tracks) {
+        if (!isValidTrack(raw))
+            continue;
+        if (isTrackInUse(room, raw.id))
+            continue;
+        const queueItem = {
+            track: { ...raw, addedBy: guestId },
+            upvotes: 1,
+            downvotes: 0,
+            score: 1,
+            voters: { [guestId]: "up" },
+        };
+        room.queue.push(queueItem);
+        getQueueOrder(room.roomCode).set(queueItem.track.id, now());
+        added += 1;
+    }
+    if (added > 0) {
+        sortQueue(room);
+        touchRoom(room);
+    }
+    return added;
+}
+function castVote(room, guestId, trackId, vote) {
+    const item = room.queue.find((entry) => entry.track.id === trackId);
+    if (!item)
+        return;
+    const current = item.voters[guestId];
+    if (current === vote) {
+        if (vote === "up")
+            item.upvotes = Math.max(0, item.upvotes - 1);
+        else
+            item.downvotes = Math.max(0, item.downvotes - 1);
+        delete item.voters[guestId];
+    }
+    else if (current === "up" && vote === "down") {
+        item.upvotes = Math.max(0, item.upvotes - 1);
+        item.downvotes += 1;
+        item.voters[guestId] = "down";
+    }
+    else if (current === "down" && vote === "up") {
+        item.downvotes = Math.max(0, item.downvotes - 1);
+        item.upvotes += 1;
+        item.voters[guestId] = "up";
+    }
+    else {
+        if (vote === "up")
+            item.upvotes += 1;
+        else
+            item.downvotes += 1;
+        item.voters[guestId] = vote;
+    }
+    item.score = item.upvotes - item.downvotes;
+    pruneOverDownvoted(room);
+    sortQueue(room);
+    touchRoom(room);
+}
+function pruneOverDownvoted(room) {
+    const memberCount = 1 + Object.keys(room.guests).length;
+    if (memberCount <= 0)
+        return;
+    const order = getQueueOrder(room.roomCode);
+    room.queue = room.queue.filter((item) => {
+        if (-item.score >= memberCount) {
+            order.delete(item.track.id);
+            return false;
+        }
+        return true;
+    });
+}
+function removeTracks(room, trackIds) {
+    const set = new Set(trackIds);
+    room.queue = room.queue.filter((item) => !set.has(item.track.id));
+    const order = getQueueOrder(room.roomCode);
+    for (const id of trackIds)
+        order.delete(id);
+    touchRoom(room);
+}
+function genVoteId() {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+function cancelSkipVote(room) {
+    const timer = skipVoteTimers.get(room.roomCode);
+    if (timer) {
+        clearTimeout(timer);
+        skipVoteTimers.delete(room.roomCode);
+    }
+    room.skipVote = null;
+}
+function startSkipVote(room, initiatorId, initiatorName) {
+    if (!canInteract(room, initiatorId))
+        return { error: "Not approved" };
+    if (room.skipVote)
+        return { error: "A skip vote is already active" };
+    if (!room.currentTrack)
+        return { error: "No song to skip" };
+    const startedAt = now();
+    const vote = {
+        id: genVoteId(),
+        trackId: room.currentTrack.id,
+        trackTitle: room.currentTrack.title,
+        initiatorId,
+        initiatorName,
+        startedAt,
+        endsAt: startedAt + SKIP_VOTE_DURATION_MS,
+        votes: { [initiatorId]: "yes" },
+        yesCount: 1,
+        noCount: 0,
+    };
+    room.skipVote = vote;
+    touchRoom(room);
+    return vote;
+}
+function castSkipVote(room, guestId, choice) {
+    if (!canInteract(room, guestId))
+        return { error: "Not approved" };
+    const vote = room.skipVote;
+    if (!vote)
+        return { error: "No active skip vote" };
+    const prev = vote.votes[guestId];
+    if (prev === choice) {
+        delete vote.votes[guestId];
+        if (choice === "yes")
+            vote.yesCount = Math.max(0, vote.yesCount - 1);
+        else
+            vote.noCount = Math.max(0, vote.noCount - 1);
+    }
+    else if (prev) {
+        vote.votes[guestId] = choice;
+        if (prev === "yes") {
+            vote.yesCount = Math.max(0, vote.yesCount - 1);
+            vote.noCount += 1;
+        }
+        else {
+            vote.noCount = Math.max(0, vote.noCount - 1);
+            vote.yesCount += 1;
+        }
+    }
+    else {
+        vote.votes[guestId] = choice;
+        if (choice === "yes")
+            vote.yesCount += 1;
+        else
+            vote.noCount += 1;
+    }
+    touchRoom(room);
+    return { ok: true };
+}
+function resolveSkipVote(room) {
+    const timer = skipVoteTimers.get(room.roomCode);
+    if (timer) {
+        clearTimeout(timer);
+        skipVoteTimers.delete(room.roomCode);
+    }
+    const vote = room.skipVote;
+    if (!vote)
+        return;
+    // Non-voters count as "no": pass requires a strict majority of all eligible
+    // voters (host + approved guests).
+    const eligible = 1 + Object.keys(room.guests).length;
+    const passed = vote.yesCount * 2 > eligible;
+    room.skipVote = null;
+    if (passed) {
+        claimNextTrack(room);
+    }
+    touchRoom(room);
+}
+function cancelKickVote(room) {
+    const timer = kickVoteTimers.get(room.roomCode);
+    if (timer) {
+        clearTimeout(timer);
+        kickVoteTimers.delete(room.roomCode);
+    }
+    room.kickVote = null;
+}
+function startKickVote(room, initiatorId, initiatorName, targetId) {
+    if (!isHostOrCohost(room, initiatorId))
+        return { error: "Host or co-host only" };
+    if (room.kickVote)
+        return { error: "A kick vote is already active" };
+    if (targetId === room.hostId)
+        return { error: "Cannot vote out the host" };
+    const targetName = room.guests[targetId];
+    if (!targetName)
+        return { error: "Target is not in the room" };
+    const startedAt = now();
+    const vote = {
+        id: genVoteId(),
+        targetId,
+        targetName,
+        initiatorId,
+        initiatorName,
+        startedAt,
+        endsAt: startedAt + KICK_VOTE_DURATION_MS,
+        votes: { [initiatorId]: "yes" },
+        yesCount: 1,
+        noCount: 0,
+    };
+    room.kickVote = vote;
+    touchRoom(room);
+    return vote;
+}
+function castKickVote(room, guestId, choice) {
+    if (!canInteract(room, guestId))
+        return { error: "Not approved" };
+    const vote = room.kickVote;
+    if (!vote)
+        return { error: "No active kick vote" };
+    if (guestId === vote.targetId)
+        return { error: "The target cannot vote" };
+    const prev = vote.votes[guestId];
+    if (prev === choice) {
+        delete vote.votes[guestId];
+        if (choice === "yes")
+            vote.yesCount = Math.max(0, vote.yesCount - 1);
+        else
+            vote.noCount = Math.max(0, vote.noCount - 1);
+    }
+    else if (prev) {
+        vote.votes[guestId] = choice;
+        if (prev === "yes") {
+            vote.yesCount = Math.max(0, vote.yesCount - 1);
+            vote.noCount += 1;
+        }
+        else {
+            vote.noCount = Math.max(0, vote.noCount - 1);
+            vote.yesCount += 1;
+        }
+    }
+    else {
+        vote.votes[guestId] = choice;
+        if (choice === "yes")
+            vote.yesCount += 1;
+        else
+            vote.noCount += 1;
+    }
+    touchRoom(room);
+    return { ok: true };
+}
+function resolveKickVote(room) {
+    const timer = kickVoteTimers.get(room.roomCode);
+    if (timer) {
+        clearTimeout(timer);
+        kickVoteTimers.delete(room.roomCode);
+    }
+    const vote = room.kickVote;
+    if (!vote)
+        return;
+    // Non-voters count as "no". Eligible voters: host + approved guests minus
+    // the target (who is never allowed to vote on their own kick).
+    const targetIsGuest = Boolean(room.guests[vote.targetId]);
+    const eligible = 1 + Object.keys(room.guests).length - (targetIsGuest ? 1 : 0);
+    const passed = vote.yesCount * 2 > eligible;
+    room.kickVote = null;
+    if (passed) {
+        moderateGuest(room, "kick-guest", vote.targetId);
+    }
+    touchRoom(room);
+}
+function setCohost(room, guestId, enabled) {
+    if (guestId === room.hostId)
+        return { error: "Host is always host" };
+    if (!room.guests[guestId])
+        return { error: "Not an approved guest" };
+    const idx = room.cohosts.indexOf(guestId);
+    if (enabled && idx === -1)
+        room.cohosts.push(guestId);
+    else if (!enabled && idx !== -1)
+        room.cohosts.splice(idx, 1);
+    touchRoom(room);
+    return { ok: true };
+}
+function normalizePlayback(raw) {
+    if (!raw || typeof raw !== "object")
+        return null;
+    const input = raw;
+    const track = input.track && isValidTrack(input.track) ? input.track : null;
+    const startedAtTimestamp = Number(input.startedAtTimestamp ?? now());
+    const startedAtPosition = Number(input.startedAtPosition ?? 0);
+    const pausedAtPosition = Number(input.pausedAtPosition ?? startedAtPosition);
+    const duration = Number(input.duration ?? track?.durationMs ?? 0);
+    return {
+        isPlaying: Boolean(input.isPlaying && track),
+        startedAtTimestamp: Number.isFinite(startedAtTimestamp) ? startedAtTimestamp : now(),
+        startedAtPosition: Number.isFinite(startedAtPosition) ? Math.max(0, startedAtPosition) : 0,
+        pausedAtPosition: Number.isFinite(pausedAtPosition) ? Math.max(0, pausedAtPosition) : 0,
+        duration: Number.isFinite(duration) ? Math.max(0, duration) : 0,
+        track,
+    };
+}
+/* ──────────────────────── HTTP application ──────────────────────── */
+const app = (0, express_1.default)();
+app.use(express_1.default.json({ limit: "1mb" }));
+if (!SHARED_SECRET) {
+    console.warn("[roomi-backend] SOCKET_PROVIDER_SECRET is empty — internal HTTP endpoints are UNAUTHENTICATED. Set the env var before deploying.");
+}
+function requireSecret(req, res, next) {
+    // Dev convenience: when no secret is configured on the backend, accept any
+    // request. When one IS configured, the matching header is mandatory.
+    if (SHARED_SECRET) {
+        const provided = req.header("x-roomi-secret");
+        if (provided !== SHARED_SECRET) {
+            res.status(401).json({ error: "Unauthorized" });
+            return;
+        }
+    }
+    next();
+}
+app.get("/health", (_req, res) => {
+    res.json({ ok: true, rooms: rooms.size });
+});
+// Frontend calls this server-to-server after Spotify OAuth completes.
+app.post("/api/rooms", requireSecret, (req, res) => {
+    const hostId = trimString(req.body?.hostId);
+    const accessToken = trimString(req.body?.accessToken);
+    const refreshToken = trimString(req.body?.refreshToken);
+    if (!hostId || !accessToken || !refreshToken) {
+        res.status(400).json({ error: "hostId, accessToken, refreshToken required" });
+        return;
+    }
+    const room = createRoom({ hostId, accessToken, refreshToken });
+    res.json({ roomCode: room.roomCode });
+});
+app.delete("/api/rooms/:roomCode", requireSecret, (req, res) => {
+    const room = getRoom(req.params.roomCode);
+    if (room) {
+        io.to(room.roomCode).emit("room:closed");
+        deleteRoom(room.roomCode);
+    }
+    res.json({ ok: true });
+});
+// Search proxy reads the room's access token via this protected endpoint
+// instead of receiving secret tokens on the client.
+app.get("/internal/rooms/:roomCode/access-token", requireSecret, (req, res) => {
+    const room = getRoom(req.params.roomCode);
+    if (!room) {
+        res.status(404).json({ error: "Room not found" });
+        return;
+    }
+    res.json({ accessToken: room.accessToken, refreshToken: room.refreshToken });
+});
+app.post("/internal/rooms/:roomCode/access-token", requireSecret, (req, res) => {
+    const room = getRoom(req.params.roomCode);
+    if (!room) {
+        res.status(404).json({ error: "Room not found" });
+        return;
+    }
+    const accessToken = trimString(req.body?.accessToken);
+    if (!accessToken) {
+        res.status(400).json({ error: "accessToken required" });
+        return;
+    }
+    room.accessToken = accessToken;
+    touchRoom(room);
+    res.json({ ok: true });
+});
+/* ─────────────────────── Socket.io server ─────────────────────── */
+const httpServer = (0, http_1.createServer)(app);
+const io = new socket_io_1.Server(httpServer, {
+    cors: { origin: CORS_ORIGINS, methods: ["GET", "POST"] },
+});
+function attachSocket(socket, room, guestId, displayName, isHost) {
+    socket.data.roomCode = room.roomCode;
+    socket.data.guestId = guestId;
+    socket.data.displayName = displayName;
+    socket.data.isHost = isHost;
+    socket.join(room.roomCode);
+    socketIndex.set(socket.id, { roomCode: room.roomCode, guestId, isHost });
+    const map = getPresence(room.roomCode);
+    const entry = map.get(guestId) ?? {
+        displayName,
+        isHost,
+        sockets: new Set(),
+        lastSeenAt: now(),
+    };
+    entry.displayName = displayName;
+    entry.isHost = isHost;
+    entry.sockets.add(socket.id);
+    entry.lastSeenAt = now();
+    map.set(guestId, entry);
+}
+function detachSocket(socket) {
+    const meta = socketIndex.get(socket.id);
+    if (!meta)
+        return;
+    socketIndex.delete(socket.id);
+    const map = presence.get(meta.roomCode);
+    if (map) {
+        const entry = map.get(meta.guestId);
+        if (entry) {
+            entry.sockets.delete(socket.id);
+            entry.lastSeenAt = now();
+            if (!entry.sockets.size)
+                map.delete(meta.guestId);
+        }
+    }
+    const room = getRoom(meta.roomCode);
+    if (room)
+        broadcastRoom(io, room);
+}
+/** Wrap a handler so unexpected exceptions never crash the process. */
+function safe(handler, ack) {
+    try {
+        return handler();
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : "Internal error";
+        ack?.({ error: message });
+        return undefined;
+    }
+}
+io.on("connection", (socket) => {
+    socket.on("room:join", (payload, ack) => {
+        safe(() => {
+            const room = getRoom(payload?.roomCode);
+            const guestId = trimString(payload?.guestId);
+            const displayName = trimString(payload?.displayName, "Guest");
+            if (!room)
+                return ack?.({ error: "Room not found" });
+            if (!guestId)
+                return ack?.({ error: "guestId required" });
+            const claimedHost = Boolean(payload?.asHost);
+            const isHost = guestId === room.hostId;
+            if (claimedHost && !isHost)
+                return ack?.({ error: "Not the room host" });
+            const status = requestGuestAccess(room, guestId, isHost ? "Host" : displayName);
+            attachSocket(socket, room, guestId, isHost ? "Host" : displayName, isHost);
+            socket.emit("room:join-status", { status });
+            ack?.({ ok: true, status, state: buildPublicState(room) });
+            broadcastRoom(io, room);
+        }, ack);
+    });
+    socket.on("room:ping", (_payload, ack) => {
+        const meta = socketIndex.get(socket.id);
+        if (meta) {
+            const map = presence.get(meta.roomCode);
+            const entry = map?.get(meta.guestId);
+            if (entry)
+                entry.lastSeenAt = now();
+            const room = getRoom(meta.roomCode);
+            if (room)
+                touchRoom(room);
+        }
+        ack?.({ ok: true });
+    });
+    socket.on("room:sync", (_payload, ack) => {
+        const meta = socketIndex.get(socket.id);
+        const room = meta ? getRoom(meta.roomCode) : undefined;
+        if (!room)
+            return ack?.({ error: "Room not found" });
+        ack?.({ ok: true, state: buildPublicState(room) });
+    });
+    /* ── Host-only events ── */
+    const requireHost = (ack) => {
+        const meta = socketIndex.get(socket.id);
+        if (!meta) {
+            ack?.({ error: "Not in a room" });
+            return null;
+        }
+        const room = getRoom(meta.roomCode);
+        if (!room) {
+            ack?.({ error: "Room not found" });
+            return null;
+        }
+        if (!meta.isHost) {
+            ack?.({ error: "Host only" });
+            return null;
+        }
+        return room;
+    };
+    socket.on("room:set-access", (payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            if (payload?.access !== "open" && payload?.access !== "locked") {
+                return ack?.({ error: "Invalid access" });
+            }
+            setRoomAccess(room, payload.access);
+            broadcastRoom(io, room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    socket.on("room:moderate-guest", (payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            const guestId = trimString(payload?.guestId);
+            const intent = payload?.intent;
+            if (!guestId || (intent !== "approve-guest" && intent !== "reject-guest" && intent !== "kick-guest")) {
+                return ack?.({ error: "Invalid moderation payload" });
+            }
+            moderateGuest(room, intent, guestId);
+            broadcastRoom(io, room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    socket.on("room:set-device", (payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            const deviceId = trimString(payload?.deviceId);
+            if (!deviceId)
+                return ack?.({ error: "deviceId required" });
+            room.deviceId = deviceId;
+            touchRoom(room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    socket.on("room:set-token", (payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            const accessToken = trimString(payload?.accessToken);
+            if (!accessToken)
+                return ack?.({ error: "accessToken required" });
+            room.accessToken = accessToken;
+            touchRoom(room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    socket.on("room:end", (_payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            io.to(room.roomCode).emit("room:closed");
+            deleteRoom(room.roomCode);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    /* ── Queue events (open to guests + host) ── */
+    socket.on("queue:add", (payload, ack) => {
+        safe(() => {
+            const meta = socketIndex.get(socket.id);
+            const room = meta ? getRoom(meta.roomCode) : undefined;
+            if (!room || !meta)
+                return ack?.({ error: "Room not found" });
+            if (!canInteract(room, meta.guestId))
+                return ack?.({ error: "Not approved" });
+            if (!isValidTrack(payload?.track))
+                return ack?.({ error: "Invalid track" });
+            const added = addTracks(room, meta.guestId, [payload.track]);
+            const wasIdle = added > 0 && !room.currentTrack && !room.playback.track;
+            const autoPlayTrack = wasIdle ? claimNextTrack(room) : null;
+            broadcastRoom(io, room);
+            ack?.({ ok: true, autoPlayTrack, state: buildPublicState(room) });
+        }, ack);
+    });
+    socket.on("queue:add-batch", (payload, ack) => {
+        safe(() => {
+            const meta = socketIndex.get(socket.id);
+            const room = meta ? getRoom(meta.roomCode) : undefined;
+            if (!room || !meta)
+                return ack?.({ error: "Room not found" });
+            if (!canInteract(room, meta.guestId))
+                return ack?.({ error: "Not approved" });
+            const tracks = Array.isArray(payload?.tracks) ? payload.tracks : [];
+            const added = addTracks(room, meta.guestId, tracks);
+            const wasIdle = added > 0 && !room.currentTrack && !room.playback.track;
+            const autoPlayTrack = wasIdle ? claimNextTrack(room) : null;
+            broadcastRoom(io, room);
+            ack?.({ ok: true, addedCount: added, autoPlayTrack, state: buildPublicState(room) });
+        }, ack);
+    });
+    socket.on("queue:vote", (payload, ack) => {
+        safe(() => {
+            const meta = socketIndex.get(socket.id);
+            const room = meta ? getRoom(meta.roomCode) : undefined;
+            if (!room || !meta)
+                return ack?.({ error: "Room not found" });
+            if (!canInteract(room, meta.guestId))
+                return ack?.({ error: "Not approved" });
+            const trackId = trimString(payload?.trackId);
+            const vote = payload?.vote;
+            if (!trackId || (vote !== "up" && vote !== "down")) {
+                return ack?.({ error: "Invalid vote" });
+            }
+            castVote(room, meta.guestId, trackId, vote);
+            broadcastRoom(io, room);
+            ack?.({ ok: true, state: buildPublicState(room) });
+        }, ack);
+    });
+    socket.on("queue:remove", (payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            const trackIds = Array.isArray(payload?.trackIds) ? payload.trackIds.map(String) : [];
+            removeTracks(room, trackIds);
+            broadcastRoom(io, room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    /* ── Playback events ── */
+    socket.on("playback:next", (_payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            // Per-room cooldown: a single user-intent skip can race with the
+            // SDK + watchdog both detecting end-of-track. Without this gate we'd
+            // pop the next two items from the queue for one intent. Return the
+            // current track unchanged on duplicate within the window.
+            const last = lastNextAt.get(room.roomCode) ?? 0;
+            if (Date.now() - last < NEXT_COOLDOWN_MS) {
+                ack?.({ ok: true, currentTrack: room.currentTrack, playback: room.playback });
+                return;
+            }
+            lastNextAt.set(room.roomCode, Date.now());
+            const track = claimNextTrack(room);
+            broadcastRoom(io, room);
+            ack?.({ ok: true, currentTrack: track, playback: room.playback });
+        }, ack);
+    });
+    socket.on("playback:state", (payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            const playback = normalizePlayback(payload?.playback);
+            if (!playback)
+                return ack?.({ error: "Invalid playback state" });
+            if (room.currentTrack?.id !== playback.track?.id) {
+                cancelSkipVote(room);
+            }
+            room.playback = playback;
+            room.currentTrack = playback.track;
+            touchRoom(room);
+            io.to(room.roomCode).emit("playback:state", playback);
+            // Also broadcast room state so late-joiners see the latest track/queue.
+            broadcastRoom(io, room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    /* ── Skip-vote events (guests + host) ── */
+    socket.on("skip-vote:start", (_payload, ack) => {
+        safe(() => {
+            const meta = socketIndex.get(socket.id);
+            const room = meta ? getRoom(meta.roomCode) : undefined;
+            if (!room || !meta)
+                return ack?.({ error: "Room not found" });
+            const displayName = socket.data.displayName ?? "Guest";
+            const result = startSkipVote(room, meta.guestId, displayName);
+            if ("error" in result)
+                return ack?.({ error: result.error });
+            const vote = result;
+            skipVoteTimers.set(room.roomCode, setTimeout(() => {
+                const current = rooms.get(room.roomCode);
+                if (!current || current.skipVote?.id !== vote.id)
+                    return;
+                resolveSkipVote(current);
+                broadcastRoom(io, current);
+            }, SKIP_VOTE_DURATION_MS));
+            broadcastRoom(io, room);
+            ack?.({ ok: true, skipVote: vote });
+        }, ack);
+    });
+    socket.on("skip-vote:cast", (payload, ack) => {
+        safe(() => {
+            const meta = socketIndex.get(socket.id);
+            const room = meta ? getRoom(meta.roomCode) : undefined;
+            if (!room || !meta)
+                return ack?.({ error: "Room not found" });
+            const choice = payload?.vote;
+            if (choice !== "yes" && choice !== "no")
+                return ack?.({ error: "Invalid vote" });
+            const result = castSkipVote(room, meta.guestId, choice);
+            if ("error" in result)
+                return ack?.({ error: result.error });
+            broadcastRoom(io, room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    /* ── Kick-vote events (host + cohosts initiate, all approved cast) ── */
+    socket.on("kick-vote:start", (payload, ack) => {
+        safe(() => {
+            const meta = socketIndex.get(socket.id);
+            const room = meta ? getRoom(meta.roomCode) : undefined;
+            if (!room || !meta)
+                return ack?.({ error: "Room not found" });
+            const targetId = trimString(payload?.targetId);
+            if (!targetId)
+                return ack?.({ error: "targetId required" });
+            const displayName = socket.data.displayName ?? "Guest";
+            const result = startKickVote(room, meta.guestId, displayName, targetId);
+            if ("error" in result)
+                return ack?.({ error: result.error });
+            const vote = result;
+            kickVoteTimers.set(room.roomCode, setTimeout(() => {
+                const current = rooms.get(room.roomCode);
+                if (!current || current.kickVote?.id !== vote.id)
+                    return;
+                resolveKickVote(current);
+                broadcastRoom(io, current);
+            }, KICK_VOTE_DURATION_MS));
+            broadcastRoom(io, room);
+            ack?.({ ok: true, kickVote: vote });
+        }, ack);
+    });
+    socket.on("kick-vote:cast", (payload, ack) => {
+        safe(() => {
+            const meta = socketIndex.get(socket.id);
+            const room = meta ? getRoom(meta.roomCode) : undefined;
+            if (!room || !meta)
+                return ack?.({ error: "Room not found" });
+            const choice = payload?.vote;
+            if (choice !== "yes" && choice !== "no")
+                return ack?.({ error: "Invalid vote" });
+            const result = castKickVote(room, meta.guestId, choice);
+            if ("error" in result)
+                return ack?.({ error: result.error });
+            broadcastRoom(io, room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    /* ── Co-host management (host only) ── */
+    socket.on("room:make-cohost", (payload, ack) => {
+        safe(() => {
+            const room = requireHost(ack);
+            if (!room)
+                return;
+            const guestId = trimString(payload?.guestId);
+            if (!guestId)
+                return ack?.({ error: "guestId required" });
+            const isCurrentlyCohost = room.cohosts.includes(guestId);
+            const enabled = typeof payload?.enabled === "boolean" ? payload.enabled : !isCurrentlyCohost;
+            const result = setCohost(room, guestId, enabled);
+            if ("error" in result)
+                return ack?.({ error: result.error });
+            broadcastRoom(io, room);
+            ack?.({ ok: true });
+        }, ack);
+    });
+    socket.on("disconnect", () => {
+        detachSocket(socket);
+    });
+});
+/* ──────────────────── Periodic housekeeping ──────────────────── */
+setInterval(() => {
+    const cutoff = now() - ROOM_TTL_MS;
+    for (const [code, room] of rooms.entries()) {
+        if (room.lastActivity < cutoff) {
+            io.to(code).emit("room:closed");
+            deleteRoom(code);
+        }
+    }
+}, 30 * 60 * 1000);
+setInterval(() => {
+    const cutoff = now() - STALE_PRESENCE_MS;
+    for (const [code, map] of presence.entries()) {
+        let dirty = false;
+        for (const [guestId, entry] of map.entries()) {
+            if (entry.lastSeenAt < cutoff && entry.sockets.size === 0) {
+                map.delete(guestId);
+                dirty = true;
+            }
+        }
+        if (dirty) {
+            const room = getRoom(code);
+            if (room)
+                broadcastRoom(io, room);
+        }
+    }
+}, 15_000);
+/* ─────────────────────────── Bootstrap ─────────────────────────── */
+httpServer.listen(PORT, () => {
+    console.log(`[roomi-backend] listening on http://127.0.0.1:${PORT}`);
+});
