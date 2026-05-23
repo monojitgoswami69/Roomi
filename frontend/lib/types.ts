@@ -32,6 +32,19 @@ export type PlaybackState = {
   track: Track | null;
 };
 
+export type SkipVote = {
+  id: string;
+  trackId: string;
+  trackTitle: string;
+  initiatorId: string;
+  initiatorName: string;
+  startedAt: number;
+  endsAt: number;
+  votes: Record<string, "yes" | "no">;
+  yesCount: number;
+  noCount: number;
+};
+
 export type RoomState = {
   roomCode: string;
   hostId: string;
@@ -42,6 +55,7 @@ export type RoomState = {
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   guestCount: number;
+  skipVote: SkipVote | null;
 };
 
 export type JoinStatus = "approved" | "pending";

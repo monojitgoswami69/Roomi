@@ -68,6 +68,14 @@ export type ClientEvents = {
     payload: { playback: PlaybackState },
     ack?: (response: SocketAck) => void,
   ) => void;
+  "skip-vote:start": (
+    payload: Record<string, never>,
+    ack?: (response: SocketAck) => void,
+  ) => void;
+  "skip-vote:cast": (
+    payload: { vote: "yes" | "no" },
+    ack?: (response: SocketAck) => void,
+  ) => void;
 };
 
 export type RoomiSocket = Socket;

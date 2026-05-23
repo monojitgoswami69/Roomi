@@ -34,6 +34,19 @@ type PlaybackState = {
   track: Track | null;
 };
 
+type SkipVote = {
+  id: string;
+  trackId: string;
+  trackTitle: string;
+  initiatorId: string;
+  initiatorName: string;
+  startedAt: number;
+  endsAt: number;
+  votes: Record<string, "yes" | "no">;
+  yesCount: number;
+  noCount: number;
+};
+
 type Room = {
   roomCode: string;
   hostId: string;
@@ -46,6 +59,7 @@ type Room = {
   playback: PlaybackState;
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
+  skipVote: SkipVote | null;
   createdAt: number;
   lastActivity: number;
 };
@@ -60,6 +74,7 @@ type PublicRoomState = {
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   guestCount: number;
+  skipVote: SkipVote | null;
 };
 
 type PresenceEntry = {
@@ -101,6 +116,8 @@ const socketIndex = new Map<string, { roomCode: string; guestId: string; isHost:
 // would otherwise pop two items off the queue for a single user-intent skip.
 const lastNextAt = new Map<string, number>();
 const NEXT_COOLDOWN_MS = 1500;
+const SKIP_VOTE_DURATION_MS = 10_000;
+const skipVoteTimers = new Map<string, NodeJS.Timeout>();
 
 /* ──────────────────────────── Helpers ──────────────────────────── */
 
@@ -174,6 +191,7 @@ function createRoom(input: { hostId: string; accessToken: string; refreshToken: 
     playback: emptyPlayback(),
     guests: {},
     pendingGuests: {},
+    skipVote: null,
     createdAt: now(),
     lastActivity: now(),
   };
@@ -189,6 +207,11 @@ function deleteRoom(code: string): void {
   queueOrder.delete(normalized);
   presence.delete(normalized);
   lastNextAt.delete(normalized);
+  const timer = skipVoteTimers.get(normalized);
+  if (timer) {
+    clearTimeout(timer);
+    skipVoteTimers.delete(normalized);
+  }
 }
 
 function sortQueue(room: Room): void {
@@ -248,6 +271,7 @@ function buildPublicState(room: Room): PublicRoomState {
     guests: getLiveGuests(room),
     pendingGuests: room.pendingGuests,
     guestCount: Object.keys(getLiveGuests(room)).length,
+    skipVote: room.skipVote,
   };
 }
 
@@ -305,6 +329,9 @@ function setRoomAccess(room: Room, access: "open" | "locked"): void {
 }
 
 function setCurrentTrack(room: Room, track: Track | null): void {
+  if (room.currentTrack?.id !== track?.id) {
+    cancelSkipVote(room);
+  }
   room.currentTrack = track;
   if (!track) {
     room.playback = emptyPlayback();
@@ -385,6 +412,92 @@ function removeTracks(room: Room, trackIds: string[]): void {
   room.queue = room.queue.filter((item) => !set.has(item.track.id));
   const order = getQueueOrder(room.roomCode);
   for (const id of trackIds) order.delete(id);
+  touchRoom(room);
+}
+
+function genVoteId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function cancelSkipVote(room: Room): void {
+  const timer = skipVoteTimers.get(room.roomCode);
+  if (timer) {
+    clearTimeout(timer);
+    skipVoteTimers.delete(room.roomCode);
+  }
+  room.skipVote = null;
+}
+
+function startSkipVote(
+  room: Room,
+  initiatorId: string,
+  initiatorName: string,
+): SkipVote | { error: string } {
+  if (!canInteract(room, initiatorId)) return { error: "Not approved" };
+  if (room.skipVote) return { error: "A skip vote is already active" };
+  if (!room.currentTrack) return { error: "No song to skip" };
+  const startedAt = now();
+  const vote: SkipVote = {
+    id: genVoteId(),
+    trackId: room.currentTrack.id,
+    trackTitle: room.currentTrack.title,
+    initiatorId,
+    initiatorName,
+    startedAt,
+    endsAt: startedAt + SKIP_VOTE_DURATION_MS,
+    votes: { [initiatorId]: "yes" },
+    yesCount: 1,
+    noCount: 0,
+  };
+  room.skipVote = vote;
+  touchRoom(room);
+  return vote;
+}
+
+function castSkipVote(
+  room: Room,
+  guestId: string,
+  choice: "yes" | "no",
+): { ok: true } | { error: string } {
+  if (!canInteract(room, guestId)) return { error: "Not approved" };
+  const vote = room.skipVote;
+  if (!vote) return { error: "No active skip vote" };
+  const prev = vote.votes[guestId];
+  if (prev === choice) {
+    delete vote.votes[guestId];
+    if (choice === "yes") vote.yesCount = Math.max(0, vote.yesCount - 1);
+    else vote.noCount = Math.max(0, vote.noCount - 1);
+  } else if (prev) {
+    vote.votes[guestId] = choice;
+    if (prev === "yes") {
+      vote.yesCount = Math.max(0, vote.yesCount - 1);
+      vote.noCount += 1;
+    } else {
+      vote.noCount = Math.max(0, vote.noCount - 1);
+      vote.yesCount += 1;
+    }
+  } else {
+    vote.votes[guestId] = choice;
+    if (choice === "yes") vote.yesCount += 1;
+    else vote.noCount += 1;
+  }
+  touchRoom(room);
+  return { ok: true };
+}
+
+function resolveSkipVote(room: Room): void {
+  const timer = skipVoteTimers.get(room.roomCode);
+  if (timer) {
+    clearTimeout(timer);
+    skipVoteTimers.delete(room.roomCode);
+  }
+  const vote = room.skipVote;
+  if (!vote) return;
+  const passed = vote.yesCount > vote.noCount;
+  room.skipVote = null;
+  if (passed) {
+    claimNextTrack(room);
+  }
   touchRoom(room);
 }
 
@@ -768,11 +881,59 @@ io.on("connection", (socket) => {
       if (!room) return;
       const playback = normalizePlayback(payload?.playback);
       if (!playback) return ack?.({ error: "Invalid playback state" });
+      if (room.currentTrack?.id !== playback.track?.id) {
+        cancelSkipVote(room);
+      }
       room.playback = playback;
       room.currentTrack = playback.track;
       touchRoom(room);
       io.to(room.roomCode).emit("playback:state", playback);
       // Also broadcast room state so late-joiners see the latest track/queue.
+      broadcastRoom(io, room);
+      ack?.({ ok: true });
+    }, ack);
+  });
+
+  /* ── Skip-vote events (guests + host) ── */
+
+  socket.on("skip-vote:start", (
+    _payload: unknown,
+    ack?: (response: SocketAck<{ skipVote?: SkipVote }>) => void,
+  ) => {
+    safe(() => {
+      const meta = socketIndex.get(socket.id);
+      const room = meta ? getRoom(meta.roomCode) : undefined;
+      if (!room || !meta) return ack?.({ error: "Room not found" });
+      const displayName = (socket.data.displayName as string | undefined) ?? "Guest";
+      const result = startSkipVote(room, meta.guestId, displayName);
+      if ("error" in result) return ack?.({ error: result.error });
+      const vote = result;
+      skipVoteTimers.set(
+        room.roomCode,
+        setTimeout(() => {
+          const current = rooms.get(room.roomCode);
+          if (!current || current.skipVote?.id !== vote.id) return;
+          resolveSkipVote(current);
+          broadcastRoom(io, current);
+        }, SKIP_VOTE_DURATION_MS),
+      );
+      broadcastRoom(io, room);
+      ack?.({ ok: true, skipVote: vote });
+    }, ack);
+  });
+
+  socket.on("skip-vote:cast", (
+    payload: { vote?: "yes" | "no" },
+    ack?: (response: SocketAck) => void,
+  ) => {
+    safe(() => {
+      const meta = socketIndex.get(socket.id);
+      const room = meta ? getRoom(meta.roomCode) : undefined;
+      if (!room || !meta) return ack?.({ error: "Room not found" });
+      const choice = payload?.vote;
+      if (choice !== "yes" && choice !== "no") return ack?.({ error: "Invalid vote" });
+      const result = castSkipVote(room, meta.guestId, choice);
+      if ("error" in result) return ack?.({ error: result.error });
       broadcastRoom(io, room);
       ack?.({ ok: true });
     }, ack);

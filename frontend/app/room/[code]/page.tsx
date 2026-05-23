@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  FastForward,
   ListMusic,
   Lock,
   LockOpen,
@@ -21,9 +22,10 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Queue from "@/components/Queue";
 import RoomQRCode from "@/components/RoomQRCode";
 import SearchModal from "@/components/SearchModal";
+import SkipVoteToast from "@/components/SkipVoteToast";
 import VinylDisc from "@/components/VinylDisc";
 import { createRoomiSocket, type RoomiSocket } from "@/lib/socket";
-import type { PlaybackState, QueueItem, RoomState, Track } from "@/lib/types";
+import type { PlaybackState, QueueItem, RoomState, SkipVote, Track } from "@/lib/types";
 
 function newGuestId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -69,6 +71,7 @@ function GuestRoomInner() {
   const [copied, setCopied] = useState(false);
   const [progressMs, setProgressMs] = useState(0);
   const [playback, setPlayback] = useState<PlaybackState | null>(null);
+  const [skipVote, setSkipVote] = useState<SkipVote | null>(null);
   const [socketStatus, setSocketStatus] = useState<
     "connecting" | "connected" | "reconnecting" | "offline"
   >("connecting");
@@ -93,6 +96,7 @@ function GuestRoomInner() {
     }
     setGuestCount(state.guestCount);
     setRoomAccess(state.access);
+    setSkipVote(state.skipVote ?? null);
     setJoinState((current) => {
       if (state.guests?.[guestId]) return "approved";
       if (state.pendingGuests?.[guestId]) return "pending";
@@ -179,6 +183,30 @@ function GuestRoomInner() {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const startSkipVote = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket || !currentTrack || skipVote || joinState !== "approved") return;
+    socket.emit(
+      "skip-vote:start",
+      {},
+      (ack: { error?: string }) => {
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  }, [currentTrack, joinState, skipVote]);
+
+  const castSkipVote = useCallback((choice: "yes" | "no") => {
+    const socket = socketRef.current;
+    if (!socket || !skipVote) return;
+    socket.emit(
+      "skip-vote:cast",
+      { vote: choice },
+      (ack: { error?: string }) => {
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  }, [skipVote]);
+
   const visibleProgressMs = currentTrack ? progressMs : 0;
   const isPlaying = Boolean(playback?.isPlaying && currentTrack);
 
@@ -244,6 +272,19 @@ function GuestRoomInner() {
                 );
               })()}
             </div>
+
+            {currentTrack && joinState === "approved" && !skipVote ? (
+              <div className="mt-6 w-full max-w-2xl px-4 flex justify-center">
+                <button
+                  type="button"
+                  onClick={startSkipVote}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-bold text-slate-200 transition hover:bg-white/[0.08] hover:scale-[1.02] active:scale-95"
+                >
+                  <FastForward className="h-3.5 w-3.5 text-sky-300" />
+                  Vote to skip
+                </button>
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -496,7 +537,7 @@ function GuestRoomInner() {
                   </div>
                 ) : null}
 
-                <div className="min-h-[12rem] flex-1 overflow-y-auto overscroll-contain pb-8 pr-1 lg:h-full lg:min-h-0">
+                <div className="min-h-[12rem] flex-1 pb-8 pr-1 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain">
                   {queue.length === 0 && !currentTrack ? (
                     <div className="flex min-h-[14rem] flex-col items-center justify-center px-4 text-center">
                       <ListMusic className="h-7 w-7 text-slate-600" />
@@ -520,6 +561,10 @@ function GuestRoomInner() {
       </main>
 
 
+
+      {skipVote ? (
+        <SkipVoteToast vote={skipVote} currentGuestId={guestId} onCast={castSkipVote} />
+      ) : null}
 
       <SearchModal
         open={showSearch}

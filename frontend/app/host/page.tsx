@@ -38,12 +38,14 @@ import Player, {
 import Queue from "@/components/Queue";
 import RoomQRCode from "@/components/RoomQRCode";
 import SearchModal from "@/components/SearchModal";
+import SkipVoteToast from "@/components/SkipVoteToast";
 import VinylDisc from "@/components/VinylDisc";
 import { createRoomiSocket, type RoomiSocket } from "@/lib/socket";
 import type {
   PlaybackState,
   QueueItem,
   RoomState,
+  SkipVote,
   Track,
 } from "@/lib/types";
 
@@ -102,6 +104,7 @@ export default function HostPage() {
   const [pendingGuests, setPendingGuests] = useState<Record<string, string>>({});
   const [roomAccess, setRoomAccessState] = useState<"open" | "locked">("open");
   const [playbackState, setPlaybackState] = useState<PlaybackState | null>(null);
+  const [skipVote, setSkipVote] = useState<SkipVote | null>(null);
   const [progressMs, setProgressMs] = useState(0);
   const [showSearch, setShowSearch] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
@@ -205,6 +208,7 @@ export default function HostPage() {
     setGuests(state.guests);
     setPendingGuests(state.pendingGuests);
     setRoomAccessState(state.access);
+    setSkipVote(state.skipVote ?? null);
   }, [applyPlaybackState]);
 
   /* ───────────── Wait for confirmed SDK playback ───────────── */
@@ -310,6 +314,20 @@ export default function HostPage() {
       void startTrack(ack?.currentTrack ?? null, 0);
     });
   }, [startTrack]);
+
+  /* ───────────── Skip vote (host can cast too) ───────────── */
+
+  const castSkipVote = useCallback((choice: "yes" | "no") => {
+    const socket = socketRef.current;
+    if (!socket || !skipVote) return;
+    socket.emit(
+      "skip-vote:cast",
+      { vote: choice },
+      (ack: { error?: string }) => {
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  }, [skipVote]);
 
   /* ───────────── Toggle play/pause ───────────── */
 
@@ -1338,7 +1356,7 @@ export default function HostPage() {
                   </div>
                 ) : null}
 
-                <div className="min-h-[12rem] flex-1 overflow-y-auto overscroll-contain pb-8 pr-1 lg:h-full lg:min-h-0">
+                <div className="min-h-[12rem] flex-1 pb-8 pr-1 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain">
                   {queue.length === 0 && !currentTrack ? (
                     <div className="flex min-h-[14rem] flex-col items-center justify-center px-4 text-center">
                       <ListMusic className="h-7 w-7 text-slate-600" />
@@ -1359,6 +1377,10 @@ export default function HostPage() {
           </div>
         </section>
       </main>
+
+      {skipVote ? (
+        <SkipVoteToast vote={skipVote} currentGuestId={hostId} onCast={castSkipVote} />
+      ) : null}
 
       <SearchModal
         open={showSearch}
