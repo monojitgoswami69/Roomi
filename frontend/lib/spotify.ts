@@ -84,12 +84,13 @@ export async function getSpotifyProfile(accessToken: string): Promise<{ displayN
   return { displayName: data.display_name?.trim() || data.id || "Account" };
 }
 
-export async function searchTracks(accessToken: string, query: string, limit = 10): Promise<Track[]> {
+export async function searchTracks(accessToken: string, query: string, limit = 10, offset = 0): Promise<Track[]> {
   const safeLimit = Math.max(1, Math.min(10, Math.floor(limit)));
   const params = new URLSearchParams({
     q: query,
     type: "track",
     limit: String(safeLimit),
+    offset: String(offset),
   });
   const data = await spotifyFetch<{
     tracks: {

@@ -19,12 +19,28 @@ export async function POST(request: Request) {
     return NextResponse.json([]);
   }
 
+  const limit = typeof body?.limit === "number" ? body.limit : 10;
+
   const tokens = await backendGetRoomToken(roomCode);
   if (!tokens) {
     return NextResponse.json({ error: "Room not found" }, { status: 404 });
   }
 
-  const run = (token: string) => searchTracks(token, query);
+  const run = async (token: string) => {
+    if (limit <= 10) {
+      return searchTracks(token, query, limit, 0);
+    }
+    // Paginate in parallel
+    const pageCount = Math.min(5, Math.ceil(limit / 10)); // Cap at 5 pages (50 tracks)
+    const promises = [];
+    for (let i = 0; i < pageCount; i++) {
+      const pageLimit = Math.min(10, limit - i * 10);
+      if (pageLimit <= 0) break;
+      promises.push(searchTracks(token, query, pageLimit, i * 10));
+    }
+    const resultsArray = await Promise.all(promises);
+    return resultsArray.flat();
+  };
 
   try {
     const tracks = await run(tokens.accessToken);

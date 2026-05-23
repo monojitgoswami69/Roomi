@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
   CheckCircle2,
   LoaderCircle,
   Music,
+  RotateCw,
   Search,
   Sparkles,
   X,
@@ -73,40 +75,40 @@ function TrackCard({
       type="button"
       disabled={queued}
       onClick={onToggle}
-      className={`group flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition-all duration-200 ${
+      className={`group flex w-full items-center gap-4 px-4 py-3.5 text-left border-b transition-all duration-200 outline-none ${
         selected
-          ? "border-emerald-400/30 bg-emerald-500/[0.08] shadow-[0_0_24px_rgba(16,185,129,0.08)]"
-          : "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.06]"
-      } disabled:cursor-not-allowed disabled:opacity-40`}
+          ? "bg-emerald-500/[0.06] rounded-2xl border-transparent"
+          : "border-white/[0.03] hover:bg-white/[0.03] hover:rounded-2xl hover:border-transparent hover:-translate-y-[0.5px]"
+      } disabled:cursor-not-allowed disabled:opacity-30`}
     >
       {track.albumArt ? (
         <img
           src={track.albumArt}
           alt={track.title}
-          className="h-12 w-12 shrink-0 rounded-xl object-cover shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
+          className="h-14 w-14 shrink-0 rounded-xl object-cover border border-white/10 shadow-sm"
         />
       ) : (
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/[0.06] bg-slate-900/60">
-          <Music className="h-4 w-4 text-slate-600" />
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-900/60">
+          <Music className="h-6 w-6 text-slate-500" />
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-semibold tracking-tight text-slate-100">
+        <p className="truncate text-base font-bold text-white tracking-tight">
           {track.title}
         </p>
-        <p className="mt-0.5 truncate text-[11px] text-slate-500">{track.artist}</p>
+        <p className="mt-1 truncate text-sm text-slate-400 font-medium">{track.artist}</p>
       </div>
       <div className="shrink-0 text-right">
-        <p className="font-mono text-[10px] text-slate-600">{formatDuration(track.durationMs)}</p>
+        <p className="font-mono text-xs text-slate-450 font-medium">{formatDuration(track.durationMs)}</p>
         {queued ? (
-          <p className="mt-0.5 text-[10px] font-semibold text-slate-600">In queue</p>
+          <p className="mt-1 text-xs font-bold text-slate-500">In queue</p>
         ) : selected ? (
-          <div className="mt-0.5 flex items-center justify-end gap-1">
-            <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-            <span className="text-[10px] font-semibold text-emerald-400">Added</span>
+          <div className="mt-1 flex items-center justify-end gap-1">
+            <CheckCircle2 className="h-4 w-4 text-emerald-450 fill-emerald-500/10" />
+            <span className="text-xs font-bold text-emerald-450">Staged</span>
           </div>
         ) : (
-          <p className="mt-0.5 text-[10px] font-medium text-slate-500 opacity-0 transition group-hover:opacity-100">
+          <p className="mt-1 text-xs font-bold text-slate-300 opacity-0 transition group-hover:opacity-100">
             + Add
           </p>
         )}
@@ -132,6 +134,8 @@ export default function SearchModal({
   const [activeMood, setActiveMood] = useState<string | null>(null);
   const [moodTracks, setMoodTracks] = useState<Track[]>([]);
   const [moodLoading, setMoodLoading] = useState(false);
+  const [homeTracks, setHomeTracks] = useState<Track[]>([]);
+  const [homeLoading, setHomeLoading] = useState(false);
   const [initialLoaded, setInitialLoaded] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -155,6 +159,7 @@ export default function SearchModal({
     setConfirming(false);
     setActiveMood(null);
     setMoodTracks([]);
+    setHomeTracks([]);
     setInitialLoaded(false);
     onClose();
   };
@@ -163,15 +168,70 @@ export default function SearchModal({
     if (open) setTimeout(() => inputRef.current?.focus(), 100);
   }, [open]);
 
+  const fetchHomeTracks = useCallback(async () => {
+    if (!roomCode) return;
+    setHomeLoading(true);
+    setError("");
+    const genericQueries = [
+      "top hits", "viral", "synthwave", "acoustic chill", "lo-fi beats",
+      "hip hop", "dance hits", "indie", "r&b", "pop classics", "chill vibes"
+    ];
+    const q1 = genericQueries[Math.floor(Math.random() * genericQueries.length)];
+    let q2 = genericQueries[Math.floor(Math.random() * genericQueries.length)];
+    if (q1 === q2) {
+      q2 = genericQueries[(genericQueries.indexOf(q1) + 1) % genericQueries.length];
+    }
+    
+    try {
+      const [res1, res2] = await Promise.all([
+        fetch("/api/spotify/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q1, roomCode, limit: 25 }),
+        }),
+        fetch("/api/spotify/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q2, roomCode, limit: 25 }),
+        })
+      ]);
+      const [payload1, payload2] = await Promise.all([
+        res1.ok ? res1.json() : Promise.resolve([]),
+        res2.ok ? res2.json() : Promise.resolve([])
+      ]);
+      
+      const tracks1 = Array.isArray(payload1) ? payload1 : [];
+      const tracks2 = Array.isArray(payload2) ? payload2 : [];
+      
+      const merged = [...tracks1, ...tracks2];
+      const seen = new Set<string>();
+      const deduped: Track[] = [];
+      for (const track of merged) {
+        if (!seen.has(track.id)) {
+          seen.add(track.id);
+          deduped.push(track);
+        }
+      }
+      
+      const shuffled = deduped.sort(() => Math.random() - 0.5);
+      setHomeTracks(shuffled.slice(0, 50));
+    } catch {
+      setError("Could not load suggestions");
+      setHomeTracks([]);
+    } finally {
+      setHomeLoading(false);
+    }
+  }, [roomCode]);
+
   useEffect(() => {
     if (open && !initialLoaded && roomCode) {
       const id = window.setTimeout(() => {
         setInitialLoaded(true);
-        setActiveMood("party");
+        fetchHomeTracks();
       }, 0);
       return () => window.clearTimeout(id);
     }
-  }, [open, initialLoaded, roomCode]);
+  }, [open, initialLoaded, roomCode, fetchHomeTracks]);
 
   const fetchMoodTracks = useCallback(
     async (moodId: string) => {
@@ -185,7 +245,7 @@ export default function SearchModal({
         const res = await fetch("/api/spotify/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: searchQuery, roomCode }),
+          body: JSON.stringify({ query: searchQuery, roomCode, limit: 50 }),
         });
         const payload = await res.json();
         if (!res.ok) {
@@ -224,7 +284,7 @@ export default function SearchModal({
         const res = await fetch("/api/spotify/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: query.trim(), roomCode }),
+          body: JSON.stringify({ query: query.trim(), roomCode, limit: 50 }),
         });
         const payload = await res.json();
         if (cancelled) return;
@@ -286,246 +346,398 @@ export default function SearchModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[rgba(2,6,23,0.82)] backdrop-blur-2xl animate-fade-in">
-      <div className="mx-auto flex h-full w-full max-w-6xl items-center px-4 py-6 sm:px-6">
-        <div className="grid h-full w-full gap-0 overflow-hidden rounded-[32px] border border-white/[0.08] bg-[linear-gradient(145deg,rgba(7,18,46,0.96),rgba(3,8,22,0.98))] shadow-[0_40px_120px_rgba(0,0,0,0.65)] md:grid-cols-[minmax(0,1.35fr)_300px]">
-          <div className="flex min-h-0 flex-col">
-            <div className="border-b border-white/[0.06] px-5 pb-4 pt-5 sm:px-7 sm:pt-7">
-              <div className="mb-5 flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/50">
-                    Add To Queue
-                  </p>
-                  <h2 className="mt-1.5 text-xl font-semibold tracking-tight text-slate-50 sm:text-2xl">
-                    Browse &amp; discover
-                  </h2>
-                </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-xl p-4 sm:p-6 md:p-10 animate-fade-in">
+      <div className="relative grid h-[85vh] max-h-[780px] w-full max-w-[92vw] lg:max-w-[75vw] gap-0 overflow-hidden rounded-[28px] border-2 border-slate-700/80 bg-gradient-to-b from-[#1b253b] to-[#0f1629] shadow-[0_30px_70px_-10px_rgba(0,0,0,0.98),0_0_50px_rgba(56,189,248,0.06)] grid-rows-[1.3fr_0.7fr] md:grid-rows-none md:grid-cols-[minmax(0,1.35fr)_360px]">
+        <div className="flex min-h-0 flex-col">
+          <div className="border-b border-white/[0.08] px-6 pb-5 pt-6 sm:px-8 sm:pt-8">
+            <div className="mb-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.26em] text-sky-400/90">
+                  Add To Queue
+                </p>
+                <h2 className="mt-1.5 text-3xl font-extrabold tracking-tight text-white">
+                  Browse &amp; Discover
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.02] text-slate-400 transition-all hover:bg-white/[0.08] hover:text-white"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3.5 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 transition-all focus-within:border-white/20 focus-within:bg-white/[0.05]">
+              <Search className="h-5 w-5 shrink-0 text-slate-400" />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  if (!e.target.value.trim()) {
+                    setResults([]);
+                    setError("");
+                    setLoading(false);
+                  }
+                }}
+                placeholder="Search songs, artists..."
+                className="w-full bg-transparent text-base text-white outline-none placeholder:text-slate-450"
+                style={{ caretColor: "#64748b" }}
+              />
+              {query ? (
                 <button
                   type="button"
-                  onClick={handleClose}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] text-slate-500 transition hover:bg-white/[0.08] hover:text-white"
-                  aria-label="Close"
+                  onClick={() => {
+                    setQuery("");
+                    setResults([]);
+                    setError("");
+                  }}
+                  className="rounded-lg p-1.5 text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-350"
                 >
                   <X className="h-4 w-4" />
                 </button>
-              </div>
-
-              <div className="flex items-center gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.03] px-4 py-3 transition-colors focus-within:border-white/[0.12] focus-within:bg-white/[0.05]">
-                <Search className="h-4 w-4 shrink-0 text-slate-500" />
-                <input
-                  ref={inputRef}
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    if (!e.target.value.trim()) {
-                      setResults([]);
-                      setError("");
-                      setLoading(false);
-                    }
-                  }}
-                  placeholder="Search songs, artists..."
-                  className="w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-600"
-                  style={{ caretColor: "#94a3b8" }}
-                />
-                {query ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setQuery("");
-                      setResults([]);
-                      setError("");
-                    }}
-                    className="rounded-lg p-1 text-slate-600 transition hover:bg-white/[0.06] hover:text-slate-300"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                ) : null}
-              </div>
-
-              {!isSearching ? (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {MOOD_CATEGORIES.map((mood) => {
-                    const isActive = activeMood === mood.id;
-                    return (
-                      <button
-                        key={mood.id}
-                        type="button"
-                        onClick={() => setActiveMood(mood.id)}
-                        className="relative inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all duration-200"
-                        style={{
-                          background: isActive
-                            ? `linear-gradient(135deg, ${mood.color}22, ${mood.colorEnd}18)`
-                            : "rgba(255,255,255,0.03)",
-                          border: isActive
-                            ? `1px solid ${mood.color}55`
-                            : "1px solid rgba(255,255,255,0.06)",
-                          color: isActive ? mood.color : "#94a3b8",
-                          boxShadow: isActive ? `0 0 20px ${mood.color}15` : "none",
-                        }}
-                      >
-                        <span className="text-sm">{mood.emoji}</span>
-                        {mood.label}
-                      </button>
-                    );
-                  })}
-                </div>
               ) : null}
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-7">
-              {error ? (
-                <p className="mb-4 rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                  {error}
-                </p>
-              ) : null}
-
-              {isLoadingTracks ? (
-                <div className="flex h-full items-center justify-center">
-                  <div className="flex flex-col items-center gap-3">
-                    <LoaderCircle className="h-5 w-5 animate-spin text-slate-500" />
-                    <p className="text-xs text-slate-600">
-                      {isSearching ? "Searching..." : "Loading suggestions..."}
-                    </p>
-                  </div>
-                </div>
-              ) : displayTracks.length === 0 && isSearching ? (
-                <div className="flex h-full flex-col items-center justify-center text-center">
-                  <Search className="h-5 w-5 text-slate-700" />
-                  <p className="mt-3 text-sm text-slate-500">No results for &ldquo;{query}&rdquo;</p>
-                </div>
-              ) : displayTracks.length === 0 && !isSearching && activeMood ? (
-                <div className="flex h-full flex-col items-center justify-center text-center">
-                  <Sparkles className="h-5 w-5 text-slate-700" />
-                  <p className="mt-3 text-sm text-slate-500">No suggestions available right now.</p>
-                </div>
-              ) : displayTracks.length > 0 ? (
-                <div>
-                  {!isSearching && activeMoodData ? (
-                    <div className="mb-3 flex items-center gap-2">
-                      <span className="text-base">{activeMoodData.emoji}</span>
-                      <p
-                        className="text-[11px] font-bold uppercase tracking-[0.2em]"
-                        style={{ color: activeMoodData.color }}
-                      >
-                        {activeMoodData.label} vibes
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => activeMood && fetchMoodTracks(activeMood)}
-                        className="ml-auto rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-300"
-                      >
-                        Refresh
-                      </button>
-                    </div>
-                  ) : null}
-                  <div className="space-y-1.5">
-                    {displayTracks.map((track) => (
-                      <TrackCard
-                        key={track.id}
-                        track={track}
-                        queued={blockedTrackIds.has(track.id)}
-                        selected={selectedIds.has(track.id)}
-                        onToggle={() => toggleSelection(track)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center text-center">
-                  <Sparkles className="h-5 w-5 text-slate-700" />
-                  <p className="mt-3 text-sm text-slate-500">Pick a mood or search for songs</p>
-                </div>
-              )}
             </div>
           </div>
 
-          <aside className="flex min-h-0 flex-col border-t border-white/[0.06] bg-white/[0.015] p-5 md:border-l md:border-t-0">
-            <div className="mb-4">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-600">
-                Your picks
+          <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar px-6 py-5 sm:px-8">
+            {error ? (
+              <p className="mb-4 rounded-xl border border-rose-500/10 bg-rose-500/5 px-4 py-2.5 text-sm text-rose-350">
+                {error}
               </p>
-              <h3 className="mt-1.5 text-lg font-semibold tracking-tight text-slate-100">
-                {selectedTracks.length}{" "}
-                <span className="text-slate-500 font-normal text-base">
-                  {selectedTracks.length === 1 ? "song" : "songs"}
-                </span>
-              </h3>
-            </div>
+            ) : null}
 
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {selectedTracks.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.06] bg-white/[0.015] px-4 text-center">
-                  <div className="h-10 w-10 rounded-xl border border-white/[0.06] bg-white/[0.03] flex items-center justify-center">
-                    <Music className="h-4 w-4 text-slate-700" />
-                  </div>
-                  <p className="mt-3 text-xs text-slate-600 leading-relaxed">
-                    Tap songs to stage them
-                    <br />
-                    before adding to queue.
+            {isLoadingTracks ? (
+              <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-3">
+                  <LoaderCircle className="h-7 w-7 animate-spin text-slate-500" />
+                  <p className="text-base text-slate-400">
+                    {isSearching ? "Searching..." : "Loading suggestions..."}
                   </p>
                 </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {selectedTracks.map((track, idx) => (
-                    <div
-                      key={track.id}
-                      className="flex items-center gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.03] px-2.5 py-2 transition hover:bg-white/[0.05]"
-                    >
-                      <span className="w-4 text-center font-mono text-[10px] text-slate-700">
-                        {idx + 1}
-                      </span>
-                      {track.albumArt ? (
-                        <img
-                          src={track.albumArt}
-                          alt={track.title}
-                          className="h-9 w-9 shrink-0 rounded-lg object-cover"
-                        />
+              </div>
+            ) : !isSearching ? (
+              /* Home / Browse & Category state */
+              activeMood === null ? (
+                /* Home Browse Page */
+                <div className="space-y-8">
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
+                      Browse All Vibes
+                    </h3>
+                    <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
+                      {MOOD_CATEGORIES.map((mood) => (
+                        <button
+                          key={mood.id}
+                          type="button"
+                          onClick={() => setActiveMood(mood.id)}
+                          className="h-24 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 text-left overflow-hidden relative group hover:bg-white/[0.04] hover:border-white/15 transition-all duration-300"
+                        >
+                          <span className="text-lg font-extrabold text-white block tracking-tight">
+                            {mood.label}
+                          </span>
+                          <span className="text-4xl absolute -right-1 -bottom-1.5 rotate-[20deg] opacity-35 scale-100 group-hover:scale-110 group-hover:rotate-[12deg] transition-all duration-300 select-none">
+                            {mood.emoji}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-4 flex items-center gap-2">
+                      <Sparkles className="h-4.5 w-4.5 text-slate-450" />
+                      <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400">
+                        Suggested for you
+                      </h3>
+                      {homeLoading ? (
+                        <LoaderCircle className="h-5 w-5 animate-spin text-slate-500 ml-2" />
                       ) : (
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900/60">
-                          <Music className="h-3 w-3 text-slate-600" />
-                        </div>
+                        <button
+                          type="button"
+                          onClick={fetchHomeTracks}
+                          className="ml-auto rounded-full border border-white/10 bg-white/[0.03] p-2 text-slate-400 hover:text-white hover:bg-white/10 transition-all duration-200 active:scale-95"
+                          aria-label="Refresh Suggestions"
+                        >
+                          <RotateCw className="h-4 w-4" />
+                        </button>
                       )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[12px] font-semibold text-slate-200">
-                          {track.title}
-                        </p>
-                        <p className="truncate text-[10px] text-slate-600">{track.artist}</p>
+                    </div>
+                    {homeLoading ? (
+                      <div className="flex h-32 items-center justify-center">
+                        <LoaderCircle className="h-6 w-6 animate-spin text-slate-650" />
                       </div>
+                    ) : homeTracks.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {homeTracks.map((track) => (
+                          <TrackCard
+                            key={track.id}
+                            track={track}
+                            queued={blockedTrackIds.has(track.id)}
+                            selected={selectedIds.has(track.id)}
+                            onToggle={() => toggleSelection(track)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-550 text-center py-6">No suggestions loaded</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                /* Category detail view page */
+                <div className="space-y-8">
+                  <div className="flex items-center gap-4 border-b border-white/[0.06] pb-4">
+                    <button
+                      type="button"
+                      onClick={() => setActiveMood(null)}
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.02] text-slate-400 hover:text-white hover:bg-white/10 transition-all active:scale-95"
+                      aria-label="Back to Vibes"
+                    >
+                      <ArrowLeft className="h-5 w-5" />
+                    </button>
+                    {activeMoodData && (
+                      <div className="flex items-center gap-2 ml-0.5">
+                        <span className="text-xl">{activeMoodData.emoji}</span>
+                        <span className="text-lg font-extrabold tracking-tight text-white">
+                          {activeMoodData.label} Vibes
+                        </span>
+                      </div>
+                    )}
+                    {moodLoading ? (
+                      <LoaderCircle className="h-5 w-5 animate-spin text-slate-500 ml-2" />
+                    ) : (
                       <button
                         type="button"
-                        onClick={() => toggleSelection(track)}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-600 transition hover:bg-rose-500/10 hover:text-rose-400"
-                        aria-label={`Remove ${track.title}`}
+                        onClick={() => fetchMoodTracks(activeMood)}
+                        className="ml-auto rounded-full border border-white/10 bg-white/[0.03] p-2 text-slate-400 hover:text-white hover:bg-white/10 transition-all duration-200 active:scale-95"
+                        aria-label="Refresh Category suggestions"
                       >
-                        <X className="h-3 w-3" />
+                        <RotateCw className="h-4 w-4" />
                       </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    )}
+                  </div>
 
-            <div className="mt-4">
-              <button
-                type="button"
-                onClick={confirmSelection}
-                disabled={!selectedTracks.length || confirming}
-                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 text-sm font-semibold text-slate-950 shadow-[0_16px_36px_rgba(16,185,129,0.25)] transition-all hover:bg-emerald-400 hover:shadow-[0_16px_44px_rgba(16,185,129,0.35)] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
-              >
-                {confirming ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="h-4 w-4" />
+                  {moodLoading ? (
+                    <div className="flex h-32 items-center justify-center">
+                      <LoaderCircle className="h-6 w-6 animate-spin text-slate-650" />
+                    </div>
+                  ) : moodTracks.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {moodTracks.map((track) => (
+                        <TrackCard
+                          key={track.id}
+                          track={track}
+                          queued={blockedTrackIds.has(track.id)}
+                          selected={selectedIds.has(track.id)}
+                          onToggle={() => toggleSelection(track)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-center py-10">
+                      <Sparkles className="h-6 w-6 text-slate-700" />
+                      <p className="mt-3 text-base text-slate-500">No suggestions available right now.</p>
+                    </div>
+                  )}
+                </div>
+              )
+            ) : displayTracks.length === 0 ? (
+              /* Empty Results State */
+              <div className="flex h-full flex-col items-center justify-center text-center">
+                <Search className="h-7 w-7 text-slate-600" />
+                <p className="mt-3 text-base text-slate-500">No results for &ldquo;{query}&rdquo;</p>
+              </div>
+            ) : (
+              /* Search Results Layout (Spotify Style) */
+              <div className="space-y-8">
+                {/* Two Column Section */}
+                <div className="grid gap-6 md:grid-cols-[1.1fr_1.4fr]">
+                  {/* Left: Top Result Card */}
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
+                      Top Result
+                    </h3>
+                    {displayTracks[0] && (
+                      <div
+                        className="relative h-[240px] w-full rounded-2xl border border-white/10 bg-white/[0.03] p-6 flex flex-col justify-between group hover:bg-white/[0.05] hover:border-white/15 transition-all duration-300"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          {displayTracks[0].albumArt ? (
+                            <img
+                              src={displayTracks[0].albumArt}
+                              alt={displayTracks[0].title}
+                              className="h-24 w-24 rounded-xl object-cover border border-white/10 shadow-md group-hover:scale-105 transition-all duration-300"
+                            />
+                          ) : (
+                            <div className="flex h-24 w-24 items-center justify-center rounded-xl border border-white/10 bg-slate-900/60">
+                              <Music className="h-10 w-10 text-slate-500" />
+                            </div>
+                          )}
+                          
+                          {/* Staged Pick Button */}
+                          <button
+                            type="button"
+                            disabled={blockedTrackIds.has(displayTracks[0].id)}
+                            onClick={() => toggleSelection(displayTracks[0])}
+                            className={`inline-flex h-9 px-4 items-center justify-center gap-1.5 rounded-full border text-xs font-bold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-30 ${
+                              selectedIds.has(displayTracks[0].id)
+                                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                                : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white"
+                            }`}
+                          >
+                            {blockedTrackIds.has(displayTracks[0].id) ? (
+                              "In queue"
+                            ) : selectedIds.has(displayTracks[0].id) ? (
+                              <>
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Staged
+                              </>
+                            ) : (
+                              "Stage Track"
+                            )}
+                          </button>
+                        </div>
+
+                        <div className="min-w-0">
+                          <p className="truncate text-xl font-extrabold text-white tracking-tight">
+                            {displayTracks[0].title}
+                          </p>
+                          <p className="truncate text-sm text-slate-400 font-medium mt-1.5">
+                            {displayTracks[0].artist}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: Songs Matches list */}
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
+                      Songs
+                    </h3>
+                    <div className="space-y-1">
+                      {displayTracks.slice(1, 5).map((track) => (
+                        <TrackCard
+                          key={track.id}
+                          track={track}
+                          queued={blockedTrackIds.has(track.id)}
+                          selected={selectedIds.has(track.id)}
+                          onToggle={() => toggleSelection(track)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Below: All Other Matches */}
+                {displayTracks.length > 5 && (
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
+                      More Matches
+                    </h3>
+                    <div className="space-y-1.5">
+                      {displayTracks.slice(5).map((track) => (
+                        <TrackCard
+                          key={track.id}
+                          track={track}
+                          queued={blockedTrackIds.has(track.id)}
+                          selected={selectedIds.has(track.id)}
+                          onToggle={() => toggleSelection(track)}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 )}
-                {confirming
-                  ? "Adding..."
-                  : selectedTracks.length
-                    ? `Add ${selectedTracks.length} to queue`
-                    : "Select songs first"}
-              </button>
-            </div>
-          </aside>
+              </div>
+            )}
+          </div>
         </div>
+
+        <aside className="flex min-h-0 flex-col border-t border-white/[0.08] bg-white/[0.005] p-6 md:border-l md:border-white/[0.08] md:border-t-0">
+          <div className="mb-5">
+            <p className="text-xs font-bold uppercase tracking-widest text-sky-400/90">
+              Your picks
+            </p>
+            <h3 className="mt-2 text-2xl font-extrabold tracking-tight text-white">
+              {selectedTracks.length}{" "}
+              <span className="text-slate-500 font-normal text-lg">
+                {selectedTracks.length === 1 ? "song" : "songs"}
+              </span>
+            </h3>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar">
+            {selectedTracks.length === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+                <Music className="h-7 w-7 text-slate-700 animate-pulse" />
+                <p className="mt-3.5 text-xs text-slate-500 leading-relaxed max-w-[180px]">
+                  Tap songs to stage them before adding to the queue.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {selectedTracks.map((track, idx) => (
+                  <div
+                    key={track.id}
+                    className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-[#0c1324]/50 px-3 py-2.5 transition hover:bg-[#121c33]/70 hover:border-white/10"
+                  >
+                    <span className="w-5 text-center font-mono text-sm text-slate-500 font-medium">
+                      {(idx + 1).toString().padStart(2, "0")}
+                    </span>
+                    {track.albumArt ? (
+                      <img
+                        src={track.albumArt}
+                        alt={track.title}
+                        className="h-11 w-11 shrink-0 rounded-lg object-cover border border-white/5"
+                      />
+                    ) : (
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-slate-900/60 border border-white/5">
+                        <Music className="h-5 w-5 text-slate-500" />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-bold text-slate-100">
+                        {track.title}
+                      </p>
+                      <p className="truncate text-xs text-slate-400 font-medium mt-0.5">{track.artist}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => toggleSelection(track)}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-500 transition hover:bg-white/[0.08] hover:text-white"
+                      aria-label={`Remove ${track.title}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-5">
+            <button
+              type="button"
+              onClick={confirmSelection}
+              disabled={!selectedTracks.length || confirming}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 text-base font-bold text-slate-950 transition-all hover:bg-emerald-450 hover:scale-[1.01] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              {confirming ? (
+                <LoaderCircle className="h-5 w-5 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-5 w-5" />
+              )}
+              {confirming
+                ? "Adding..."
+                : selectedTracks.length
+                  ? `Add ${selectedTracks.length} to queue`
+                  : "Select songs first"}
+            </button>
+          </div>
+        </aside>
       </div>
     </div>
   );

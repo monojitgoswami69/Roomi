@@ -49,7 +49,7 @@ export default function VinylDisc({ track, isPlaying, theme = "cyberpunk" }: Vin
   }, [isPlaying, theme]);
 
   return (
-    <div className="relative w-[70vw] h-[70vw] min-w-[12rem] min-h-[12rem] max-w-[18rem] max-h-[18rem] lg:w-[28vw] lg:h-[28vw] lg:min-w-[24rem] lg:min-h-[24rem] lg:max-w-[31rem] lg:max-h-[31rem] flex items-center justify-center overflow-visible select-none pointer-events-none">
+    <div className="relative w-[65vw] h-[65vw] min-w-[12rem] min-h-[12rem] max-w-[17rem] max-h-[17rem] lg:w-[22vw] lg:h-[22vw] lg:min-w-[18rem] lg:min-h-[18rem] lg:max-w-[24rem] lg:max-h-[24rem] flex items-center justify-center overflow-visible select-none pointer-events-none">
       
       {/* 1. Dynamic Backlight Neon Aura (Leverages soft, minimal colors to distinguish the floating disc against the dark background) */}
       <div

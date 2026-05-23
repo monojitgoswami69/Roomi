@@ -199,7 +199,7 @@ function GuestRoomInner() {
             <VinylDisc track={currentTrack} isPlaying={isPlaying} theme={glowTheme} />
 
             <div className="mt-6 text-center w-full max-w-2xl px-4">
-              <h2 className="mx-auto text-[2rem] font-semibold tracking-tight text-slate-50 lg:text-[2.35rem] line-clamp-1 truncate">
+              <h2 className="mx-auto text-[clamp(1.4rem,4.5vw,2rem)] lg:text-[2.35rem] font-semibold tracking-tight text-slate-50 line-clamp-1 truncate">
                 {currentTrack?.title || "Waiting for songs..."}
               </h2>
               <p className="mt-1.5 text-[15px] text-slate-400 lg:text-base line-clamp-1 truncate">

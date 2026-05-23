@@ -196,8 +196,8 @@ export default function HomePage() {
         <div className="minimal-card" style={{ marginTop: 56, width: "100%", maxWidth: 864 }}>
           <div className="landing-cards">
             <div
-              className="card-column"
-              style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", padding: 32 }}
+              className="card-column p-6 sm:p-8"
+              style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}
             >
               <div>
                 <h2
@@ -315,8 +315,8 @@ export default function HomePage() {
             <div className="card-separator" />
 
             <div
-              className="card-column"
-              style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", padding: 32 }}
+              className="card-column p-6 sm:p-8"
+              style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}
             >
               <div>
                 <h2
