@@ -76,6 +76,18 @@ export type ClientEvents = {
     payload: { vote: "yes" | "no" },
     ack?: (response: SocketAck) => void,
   ) => void;
+  "kick-vote:start": (
+    payload: { targetId: string },
+    ack?: (response: SocketAck) => void,
+  ) => void;
+  "kick-vote:cast": (
+    payload: { vote: "yes" | "no" },
+    ack?: (response: SocketAck) => void,
+  ) => void;
+  "room:make-cohost": (
+    payload: { guestId: string; enabled?: boolean },
+    ack?: (response: SocketAck) => void,
+  ) => void;
 };
 
 export type RoomiSocket = Socket;

@@ -6,6 +6,8 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Crown,
+  DoorClosed,
   FastForward,
   ListMusic,
   Lock,
@@ -23,9 +25,10 @@ import Queue from "@/components/Queue";
 import RoomQRCode from "@/components/RoomQRCode";
 import SearchModal from "@/components/SearchModal";
 import SkipVoteToast from "@/components/SkipVoteToast";
+import KickVoteToast from "@/components/KickVoteToast";
 import VinylDisc from "@/components/VinylDisc";
 import { createRoomiSocket, type RoomiSocket } from "@/lib/socket";
-import type { PlaybackState, QueueItem, RoomState, SkipVote, Track } from "@/lib/types";
+import type { KickVote, PlaybackState, QueueItem, RoomState, SkipVote, Track } from "@/lib/types";
 
 function newGuestId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -72,6 +75,14 @@ function GuestRoomInner() {
   const [progressMs, setProgressMs] = useState(0);
   const [playback, setPlayback] = useState<PlaybackState | null>(null);
   const [skipVote, setSkipVote] = useState<SkipVote | null>(null);
+  const [kickVote, setKickVote] = useState<KickVote | null>(null);
+  const [cohosts, setCohosts] = useState<string[]>([]);
+  const [hostId, setHostId] = useState("");
+  const [guestsMap, setGuestsMap] = useState<Record<string, string>>({});
+  const [showGuestsDropdown, setShowGuestsDropdown] = useState(false);
+  const [kickStartingId, setKickStartingId] = useState<string | null>(null);
+  const [removalReason, setRemovalReason] = useState<"kicked" | "rejected" | null>(null);
+  const prevJoinStateRef = useRef<"joining" | "approved" | "pending" | "removed">("joining");
   const [socketStatus, setSocketStatus] = useState<
     "connecting" | "connected" | "reconnecting" | "offline"
   >("connecting");
@@ -97,6 +108,10 @@ function GuestRoomInner() {
     setGuestCount(state.guestCount);
     setRoomAccess(state.access);
     setSkipVote(state.skipVote ?? null);
+    setKickVote(state.kickVote ?? null);
+    setCohosts(state.cohosts ?? []);
+    setHostId(state.hostId);
+    setGuestsMap(state.guests ?? {});
     setJoinState((current) => {
       if (state.guests?.[guestId]) return "approved";
       if (state.pendingGuests?.[guestId]) return "pending";
@@ -120,8 +135,7 @@ function GuestRoomInner() {
       setSocketStatus("connected");
       socket.emit("room:join", { roomCode, guestId, displayName }, (ack: { error?: string; state?: RoomState; status?: "approved" | "pending" }) => {
         if (ack?.error === "Room not found") {
-          setError("Room not found.");
-          setLoading(false);
+          router.replace("/?error=room-not-found");
           return;
         }
         if (ack?.error) setError(ack.error);
@@ -177,6 +191,26 @@ function GuestRoomInner() {
     return () => window.clearInterval(id);
   }, [playback]);
 
+  /* ───────────── Eject on kick: show toast then redirect ───────────── */
+
+  useEffect(() => {
+    if (joinState === "approved" || joinState === "pending") {
+      prevJoinStateRef.current = joinState;
+      return;
+    }
+    if (joinState === "removed" && !removalReason) {
+      const reason: "kicked" | "rejected" =
+        prevJoinStateRef.current === "approved" ? "kicked" : "rejected";
+      setRemovalReason(reason);
+    }
+  }, [joinState, removalReason]);
+
+  useEffect(() => {
+    if (removalReason !== "kicked") return;
+    const id = window.setTimeout(() => router.replace("/?kicked=1"), 1500);
+    return () => window.clearTimeout(id);
+  }, [removalReason, router]);
+
   const copyCode = async () => {
     await navigator.clipboard.writeText(roomCode);
     setCopied(true);
@@ -206,6 +240,41 @@ function GuestRoomInner() {
       },
     );
   }, [skipVote]);
+
+  const castKickVote = useCallback((choice: "yes" | "no") => {
+    const socket = socketRef.current;
+    if (!socket || !kickVote) return;
+    socket.emit(
+      "kick-vote:cast",
+      { vote: choice },
+      (ack: { error?: string }) => {
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  }, [kickVote]);
+
+  const startKickVote = useCallback((targetId: string) => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    setKickStartingId(targetId);
+    socket.emit(
+      "kick-vote:start",
+      { targetId },
+      (ack: { error?: string }) => {
+        setKickStartingId(null);
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  }, []);
+
+  const isCohost = useMemo(() => cohosts.includes(guestId), [cohosts, guestId]);
+  const visibleGuests = useMemo(
+    () =>
+      Object.entries(guestsMap)
+        .filter(([gid]) => gid !== hostId)
+        .map(([id, name]) => ({ id, name, isCohost: cohosts.includes(id) })),
+    [cohosts, guestsMap, hostId],
+  );
 
   const visibleProgressMs = currentTrack ? progressMs : 0;
   const isPlaying = Boolean(playback?.isPlaying && currentTrack);
@@ -344,10 +413,98 @@ function GuestRoomInner() {
 
                 {/* Floating Settings & Guest Controls (Always absolute at the top-right to prevent taking up vertical height in flow) */}
                 <div className="absolute top-2.5 right-0 z-40 flex items-center gap-2">
-                    {/* Connected Guests Button (read-only count for guest layout) */}
-                    <div className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-bold text-slate-400 select-none">
-                      <Users className="h-4 w-4" />
-                      <span className="font-mono text-[11px]">{guestCount}</span>
+                    {/* Connected Guests Button — moderation panel for co-hosts, read-only otherwise */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        disabled={!isCohost}
+                        onClick={() => {
+                          if (!isCohost) return;
+                          setShowGuestsDropdown(!showGuestsDropdown);
+                          setShowSettings(false);
+                        }}
+                        className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-bold transition-all duration-300 focus:outline-none ${
+                          isCohost
+                            ? showGuestsDropdown
+                              ? "text-sky-300 bg-white/5 scale-105"
+                              : "text-slate-400 hover:text-slate-200 hover:scale-105"
+                            : "text-slate-400 cursor-default"
+                        }`}
+                        aria-label="Connected Guests"
+                      >
+                        {isCohost ? <Crown className="h-4 w-4 text-amber-400" /> : <Users className="h-4 w-4" />}
+                        <span className="font-mono text-[11px]">{guestCount}</span>
+                      </button>
+
+                      {showGuestsDropdown && isCohost && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-40 bg-transparent cursor-default"
+                            onClick={() => setShowGuestsDropdown(false)}
+                          />
+                          <div className="absolute right-[-40px] md:right-0 top-full mt-2 z-50 w-[min(calc(100vw-2rem),24rem)] max-h-[60vh] overflow-y-auto rounded-[24px] border border-white/10 bg-[#040816]/95 p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)] backdrop-blur-2xl animate-scale-in no-scrollbar space-y-4">
+                            <section className="space-y-2.5">
+                              <div className="flex items-center gap-2">
+                                <Crown className="h-3 w-3 text-amber-400" />
+                                <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-amber-300/80 select-none">
+                                  Co-Host Tools
+                                </h4>
+                              </div>
+                              <p className="text-[10px] leading-relaxed text-slate-500 select-none">
+                                Start a kick vote against a guest. A majority of approved members must agree within 10 seconds.
+                              </p>
+                            </section>
+
+                            <hr className="border-t border-white/5 select-none" />
+
+                            <section className="space-y-2.5">
+                              <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-sky-300/80 select-none">
+                                Connected ({visibleGuests.length})
+                              </h4>
+                              {visibleGuests.length === 0 ? (
+                                <p className="text-[10px] text-slate-500/80 px-1 py-1 select-none">No other guests are connected.</p>
+                              ) : (
+                                <div className="space-y-2 divide-y divide-white/5 max-h-[35vh] overflow-y-auto no-scrollbar">
+                                  {visibleGuests.map((guest) => {
+                                    const kickActive = Boolean(kickVote);
+                                    const isSelf = guest.id === guestId;
+                                    return (
+                                      <div key={guest.id} className="flex items-center justify-between py-2 px-1 animate-scale-in select-none">
+                                        <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                                          <span className="text-xs font-semibold text-slate-200 truncate">{guest.name}</span>
+                                          {guest.isCohost ? (
+                                            <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300">
+                                              <Crown className="h-2.5 w-2.5" />
+                                              Co-Host
+                                            </span>
+                                          ) : null}
+                                          {isSelf ? (
+                                            <span className="inline-flex shrink-0 items-center rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-sky-300">
+                                              You
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                        {!isSelf ? (
+                                          <button
+                                            type="button"
+                                            disabled={kickActive || kickStartingId === guest.id}
+                                            onClick={() => startKickVote(guest.id)}
+                                            className="inline-flex h-6 items-center gap-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-50 disabled:cursor-not-allowed px-2 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition"
+                                            title={kickActive ? "A kick vote is already active" : "Start a kick vote"}
+                                          >
+                                            <DoorClosed className="h-2.5 w-2.5" />
+                                            Kick
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </section>
+                          </div>
+                        </>
+                      )}
                     </div>
 
                     {/* Settings Dropdown Button and Popup */}
@@ -533,7 +690,9 @@ function GuestRoomInner() {
 
                 {joinState === "removed" ? (
                   <div className="mb-4 rounded-[22px] border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-                    You no longer have access to this room.
+                    {removalReason === "kicked"
+                      ? "You have been kicked. Returning home..."
+                      : "You no longer have access to this room."}
                   </div>
                 ) : null}
 
@@ -564,6 +723,10 @@ function GuestRoomInner() {
 
       {skipVote ? (
         <SkipVoteToast vote={skipVote} currentGuestId={guestId} onCast={castSkipVote} />
+      ) : null}
+
+      {kickVote ? (
+        <KickVoteToast vote={kickVote} currentGuestId={guestId} onCast={castKickVote} />
       ) : null}
 
       <SearchModal

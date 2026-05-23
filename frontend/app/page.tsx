@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { LoaderCircle, LogOut } from "lucide-react";
 
 function normalizeCode(v: string) {
@@ -10,6 +10,7 @@ function normalizeCode(v: string) {
 
 function toastFor(error: string | null): string {
   if (error === "room-not-found") return "Room not found";
+  if (error === "kicked") return "You have been kicked from the room";
   if (error === "host-session-missing") return "Session expired. Please reconnect Spotify.";
   if (error === "auth-cancelled") return "Spotify connection was cancelled. Try again when you're ready.";
   if (error === "auth-failed") return "Failed to connect Spotify. Please try again.";
@@ -25,7 +26,16 @@ type AuthState = {
 };
 
 export default function HomePage() {
+  return (
+    <Suspense fallback={null}>
+      <HomePageInner />
+    </Suspense>
+  );
+}
+
+function HomePageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [authLoading, setAuthLoading] = useState(true);
   const [auth, setAuth] = useState<AuthState>({
     connected: false,
@@ -68,6 +78,19 @@ export default function HomePage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const queryError = searchParams.get("error") || (searchParams.get("kicked") === "1" ? "kicked" : null);
+    const queryToast = toastFor(queryError);
+    if (queryToast) {
+      setToast(queryToast);
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("error");
+      params.delete("kicked");
+      const next = params.toString();
+      router.replace(next ? `/?${next}` : "/", { scroll: false });
+    }
+  }, [router, searchParams]);
 
   const handleCreateRoom = async () => {
     setCreateLoading(true);

@@ -39,9 +39,11 @@ import Queue from "@/components/Queue";
 import RoomQRCode from "@/components/RoomQRCode";
 import SearchModal from "@/components/SearchModal";
 import SkipVoteToast from "@/components/SkipVoteToast";
+import KickVoteToast from "@/components/KickVoteToast";
 import VinylDisc from "@/components/VinylDisc";
 import { createRoomiSocket, type RoomiSocket } from "@/lib/socket";
 import type {
+  KickVote,
   PlaybackState,
   QueueItem,
   RoomState,
@@ -105,6 +107,8 @@ export default function HostPage() {
   const [roomAccess, setRoomAccessState] = useState<"open" | "locked">("open");
   const [playbackState, setPlaybackState] = useState<PlaybackState | null>(null);
   const [skipVote, setSkipVote] = useState<SkipVote | null>(null);
+  const [kickVote, setKickVote] = useState<KickVote | null>(null);
+  const [cohosts, setCohosts] = useState<string[]>([]);
   const [progressMs, setProgressMs] = useState(0);
   const [showSearch, setShowSearch] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
@@ -209,6 +213,8 @@ export default function HostPage() {
     setPendingGuests(state.pendingGuests);
     setRoomAccessState(state.access);
     setSkipVote(state.skipVote ?? null);
+    setKickVote(state.kickVote ?? null);
+    setCohosts(state.cohosts ?? []);
   }, [applyPlaybackState]);
 
   /* ───────────── Wait for confirmed SDK playback ───────────── */
@@ -328,6 +334,18 @@ export default function HostPage() {
       },
     );
   }, [skipVote]);
+
+  const castKickVote = useCallback((choice: "yes" | "no") => {
+    const socket = socketRef.current;
+    if (!socket || !kickVote) return;
+    socket.emit(
+      "kick-vote:cast",
+      { vote: choice },
+      (ack: { error?: string }) => {
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  }, [kickVote]);
 
   /* ───────────── Toggle play/pause ───────────── */
 
@@ -701,6 +719,30 @@ export default function HostPage() {
     });
   };
 
+  const startKickVote = (guestId: string) => {
+    setApprovingGuestId(guestId);
+    socketRef.current?.emit(
+      "kick-vote:start",
+      { targetId: guestId },
+      (ack: { error?: string }) => {
+        setApprovingGuestId(null);
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  };
+
+  const toggleCohost = (guestId: string) => {
+    setApprovingGuestId(guestId);
+    socketRef.current?.emit(
+      "room:make-cohost",
+      { guestId },
+      (ack: { error?: string }) => {
+        setApprovingGuestId(null);
+        if (ack?.error) setError(ack.error);
+      },
+    );
+  };
+
   const copyCode = async () => {
     if (!roomCode) return;
     await navigator.clipboard.writeText(roomCode);
@@ -998,37 +1040,50 @@ export default function HostPage() {
                                 <p className="text-[10px] text-slate-500/80 px-1 py-1 select-none">No active guests connected.</p>
                               ) : (
                                 <div className="space-y-2 divide-y divide-white/5 max-h-[25vh] overflow-y-auto no-scrollbar">
-                                  {visibleGuests.map((guest) => (
+                                  {visibleGuests.map((guest) => {
+                                    const isCohost = cohosts.includes(guest.id);
+                                    const kickActive = Boolean(kickVote);
+                                    return (
                                     <div key={guest.id} className="flex items-center justify-between py-2 px-1 animate-scale-in select-none">
-                                      <span className="text-xs font-semibold text-slate-200 truncate pr-2">{guest.name}</span>
+                                      <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                                        <span className="text-xs font-semibold text-slate-200 truncate">{guest.name}</span>
+                                        {isCohost ? (
+                                          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300">
+                                            <Crown className="h-2.5 w-2.5" />
+                                            Co-Host
+                                          </span>
+                                        ) : null}
+                                      </div>
                                       <div className="flex items-center gap-1.5 shrink-0">
-                                        {/* Make Co-Host Button */}
                                         <button
                                           type="button"
                                           disabled={approvingGuestId === guest.id}
-                                          onClick={() => {
-                                            socketRef.current?.emit("room:make-cohost", { guestId: guest.id });
-                                            alert(`Emitted co-host privileges invite event for ${guest.name}!`);
-                                          }}
-                                          className="inline-flex h-6 items-center gap-1 rounded-md bg-amber-500/10 hover:bg-amber-500/20 px-2.5 text-[9px] font-bold uppercase tracking-wider text-amber-300 transition"
-                                          title="Grant Host Privileges"
+                                          onClick={() => toggleCohost(guest.id)}
+                                          className={`inline-flex h-6 items-center gap-1 rounded-md px-2.5 text-[9px] font-bold uppercase tracking-wider transition ${
+                                            isCohost
+                                              ? "bg-amber-500/25 hover:bg-amber-500/35 text-amber-200"
+                                              : "bg-amber-500/10 hover:bg-amber-500/20 text-amber-300"
+                                          }`}
+                                          title={isCohost ? "Revoke co-host" : "Grant co-host"}
                                         >
                                           <Crown className="h-2.5 w-2.5 text-amber-400" />
-                                          Co-Host
+                                          {isCohost ? "Revoke" : "Co-Host"}
                                         </button>
 
                                         <button
                                           type="button"
-                                          disabled={approvingGuestId === guest.id}
-                                          onClick={() => handleGuestModeration(guest.id, "kick-guest")}
-                                          className="inline-flex h-6 items-center gap-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 px-2 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition"
+                                          disabled={approvingGuestId === guest.id || kickActive}
+                                          onClick={() => startKickVote(guest.id)}
+                                          className="inline-flex h-6 items-center gap-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-50 disabled:cursor-not-allowed px-2 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition"
+                                          title={kickActive ? "A kick vote is already active" : "Start a kick vote"}
                                         >
                                           <DoorClosed className="h-2.5 w-2.5" />
                                           Kick
                                         </button>
                                       </div>
                                     </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               )}
                             </section>
@@ -1380,6 +1435,10 @@ export default function HostPage() {
 
       {skipVote ? (
         <SkipVoteToast vote={skipVote} currentGuestId={hostId} onCast={castSkipVote} />
+      ) : null}
+
+      {kickVote ? (
+        <KickVoteToast vote={kickVote} currentGuestId={hostId} onCast={castKickVote} />
       ) : null}
 
       <SearchModal

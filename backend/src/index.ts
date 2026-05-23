@@ -47,6 +47,19 @@ type SkipVote = {
   noCount: number;
 };
 
+type KickVote = {
+  id: string;
+  targetId: string;
+  targetName: string;
+  initiatorId: string;
+  initiatorName: string;
+  startedAt: number;
+  endsAt: number;
+  votes: Record<string, "yes" | "no">;
+  yesCount: number;
+  noCount: number;
+};
+
 type Room = {
   roomCode: string;
   hostId: string;
@@ -59,7 +72,9 @@ type Room = {
   playback: PlaybackState;
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
+  cohosts: string[];
   skipVote: SkipVote | null;
+  kickVote: KickVote | null;
   createdAt: number;
   lastActivity: number;
 };
@@ -74,7 +89,9 @@ type PublicRoomState = {
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   guestCount: number;
+  cohosts: string[];
   skipVote: SkipVote | null;
+  kickVote: KickVote | null;
 };
 
 type PresenceEntry = {
@@ -117,7 +134,9 @@ const socketIndex = new Map<string, { roomCode: string; guestId: string; isHost:
 const lastNextAt = new Map<string, number>();
 const NEXT_COOLDOWN_MS = 1500;
 const SKIP_VOTE_DURATION_MS = 10_000;
+const KICK_VOTE_DURATION_MS = 10_000;
 const skipVoteTimers = new Map<string, NodeJS.Timeout>();
+const kickVoteTimers = new Map<string, NodeJS.Timeout>();
 
 /* ──────────────────────────── Helpers ──────────────────────────── */
 
@@ -191,7 +210,9 @@ function createRoom(input: { hostId: string; accessToken: string; refreshToken: 
     playback: emptyPlayback(),
     guests: {},
     pendingGuests: {},
+    cohosts: [],
     skipVote: null,
+    kickVote: null,
     createdAt: now(),
     lastActivity: now(),
   };
@@ -207,10 +228,15 @@ function deleteRoom(code: string): void {
   queueOrder.delete(normalized);
   presence.delete(normalized);
   lastNextAt.delete(normalized);
-  const timer = skipVoteTimers.get(normalized);
-  if (timer) {
-    clearTimeout(timer);
+  const skipTimer = skipVoteTimers.get(normalized);
+  if (skipTimer) {
+    clearTimeout(skipTimer);
     skipVoteTimers.delete(normalized);
+  }
+  const kickTimer = kickVoteTimers.get(normalized);
+  if (kickTimer) {
+    clearTimeout(kickTimer);
+    kickVoteTimers.delete(normalized);
   }
 }
 
@@ -231,6 +257,10 @@ function isTrackInUse(room: Room, trackId: string): boolean {
 
 function canInteract(room: Room, guestId: string): boolean {
   return guestId === room.hostId || Boolean(room.guests[guestId]);
+}
+
+function isHostOrCohost(room: Room, guestId: string): boolean {
+  return guestId === room.hostId || room.cohosts.includes(guestId);
 }
 
 function isValidTrack(track: unknown): track is Track {
@@ -271,7 +301,9 @@ function buildPublicState(room: Room): PublicRoomState {
     guests: getLiveGuests(room),
     pendingGuests: room.pendingGuests,
     guestCount: Object.keys(getLiveGuests(room)).length,
+    cohosts: room.cohosts.filter((id) => Boolean(room.guests[id])),
     skipVote: room.skipVote,
+    kickVote: room.kickVote,
   };
 }
 
@@ -313,6 +345,11 @@ function moderateGuest(
   } else if (intent === "kick-guest") {
     delete room.pendingGuests[guestId];
     delete room.guests[guestId];
+    room.cohosts = room.cohosts.filter((id) => id !== guestId);
+    if (room.kickVote?.targetId === guestId) {
+      cancelKickVote(room);
+    }
+    pruneOverDownvoted(room);
   }
   touchRoom(room);
 }
@@ -403,8 +440,22 @@ function castVote(room: Room, guestId: string, trackId: string, vote: Vote): voi
     item.voters[guestId] = vote;
   }
   item.score = item.upvotes - item.downvotes;
+  pruneOverDownvoted(room);
   sortQueue(room);
   touchRoom(room);
+}
+
+function pruneOverDownvoted(room: Room): void {
+  const memberCount = 1 + Object.keys(room.guests).length;
+  if (memberCount <= 0) return;
+  const order = getQueueOrder(room.roomCode);
+  room.queue = room.queue.filter((item) => {
+    if (-item.score >= memberCount) {
+      order.delete(item.track.id);
+      return false;
+    }
+    return true;
+  });
 }
 
 function removeTracks(room: Room, trackIds: string[]): void {
@@ -493,12 +544,115 @@ function resolveSkipVote(room: Room): void {
   }
   const vote = room.skipVote;
   if (!vote) return;
-  const passed = vote.yesCount > vote.noCount;
+  // Non-voters count as "no": pass requires a strict majority of all eligible
+  // voters (host + approved guests).
+  const eligible = 1 + Object.keys(room.guests).length;
+  const passed = vote.yesCount * 2 > eligible;
   room.skipVote = null;
   if (passed) {
     claimNextTrack(room);
   }
   touchRoom(room);
+}
+
+function cancelKickVote(room: Room): void {
+  const timer = kickVoteTimers.get(room.roomCode);
+  if (timer) {
+    clearTimeout(timer);
+    kickVoteTimers.delete(room.roomCode);
+  }
+  room.kickVote = null;
+}
+
+function startKickVote(
+  room: Room,
+  initiatorId: string,
+  initiatorName: string,
+  targetId: string,
+): KickVote | { error: string } {
+  if (!isHostOrCohost(room, initiatorId)) return { error: "Host or co-host only" };
+  if (room.kickVote) return { error: "A kick vote is already active" };
+  if (targetId === room.hostId) return { error: "Cannot vote out the host" };
+  const targetName = room.guests[targetId];
+  if (!targetName) return { error: "Target is not in the room" };
+  const startedAt = now();
+  const vote: KickVote = {
+    id: genVoteId(),
+    targetId,
+    targetName,
+    initiatorId,
+    initiatorName,
+    startedAt,
+    endsAt: startedAt + KICK_VOTE_DURATION_MS,
+    votes: { [initiatorId]: "yes" },
+    yesCount: 1,
+    noCount: 0,
+  };
+  room.kickVote = vote;
+  touchRoom(room);
+  return vote;
+}
+
+function castKickVote(
+  room: Room,
+  guestId: string,
+  choice: "yes" | "no",
+): { ok: true } | { error: string } {
+  if (!canInteract(room, guestId)) return { error: "Not approved" };
+  const vote = room.kickVote;
+  if (!vote) return { error: "No active kick vote" };
+  if (guestId === vote.targetId) return { error: "The target cannot vote" };
+  const prev = vote.votes[guestId];
+  if (prev === choice) {
+    delete vote.votes[guestId];
+    if (choice === "yes") vote.yesCount = Math.max(0, vote.yesCount - 1);
+    else vote.noCount = Math.max(0, vote.noCount - 1);
+  } else if (prev) {
+    vote.votes[guestId] = choice;
+    if (prev === "yes") {
+      vote.yesCount = Math.max(0, vote.yesCount - 1);
+      vote.noCount += 1;
+    } else {
+      vote.noCount = Math.max(0, vote.noCount - 1);
+      vote.yesCount += 1;
+    }
+  } else {
+    vote.votes[guestId] = choice;
+    if (choice === "yes") vote.yesCount += 1;
+    else vote.noCount += 1;
+  }
+  touchRoom(room);
+  return { ok: true };
+}
+
+function resolveKickVote(room: Room): void {
+  const timer = kickVoteTimers.get(room.roomCode);
+  if (timer) {
+    clearTimeout(timer);
+    kickVoteTimers.delete(room.roomCode);
+  }
+  const vote = room.kickVote;
+  if (!vote) return;
+  // Non-voters count as "no". Eligible voters: host + approved guests minus
+  // the target (who is never allowed to vote on their own kick).
+  const targetIsGuest = Boolean(room.guests[vote.targetId]);
+  const eligible = 1 + Object.keys(room.guests).length - (targetIsGuest ? 1 : 0);
+  const passed = vote.yesCount * 2 > eligible;
+  room.kickVote = null;
+  if (passed) {
+    moderateGuest(room, "kick-guest", vote.targetId);
+  }
+  touchRoom(room);
+}
+
+function setCohost(room: Room, guestId: string, enabled: boolean): { ok: true } | { error: string } {
+  if (guestId === room.hostId) return { error: "Host is always host" };
+  if (!room.guests[guestId]) return { error: "Not an approved guest" };
+  const idx = room.cohosts.indexOf(guestId);
+  if (enabled && idx === -1) room.cohosts.push(guestId);
+  else if (!enabled && idx !== -1) room.cohosts.splice(idx, 1);
+  touchRoom(room);
+  return { ok: true };
 }
 
 function normalizePlayback(raw: unknown): PlaybackState | null {
@@ -933,6 +1087,73 @@ io.on("connection", (socket) => {
       const choice = payload?.vote;
       if (choice !== "yes" && choice !== "no") return ack?.({ error: "Invalid vote" });
       const result = castSkipVote(room, meta.guestId, choice);
+      if ("error" in result) return ack?.({ error: result.error });
+      broadcastRoom(io, room);
+      ack?.({ ok: true });
+    }, ack);
+  });
+
+  /* ── Kick-vote events (host + cohosts initiate, all approved cast) ── */
+
+  socket.on("kick-vote:start", (
+    payload: { targetId?: string },
+    ack?: (response: SocketAck<{ kickVote?: KickVote }>) => void,
+  ) => {
+    safe(() => {
+      const meta = socketIndex.get(socket.id);
+      const room = meta ? getRoom(meta.roomCode) : undefined;
+      if (!room || !meta) return ack?.({ error: "Room not found" });
+      const targetId = trimString(payload?.targetId);
+      if (!targetId) return ack?.({ error: "targetId required" });
+      const displayName = (socket.data.displayName as string | undefined) ?? "Guest";
+      const result = startKickVote(room, meta.guestId, displayName, targetId);
+      if ("error" in result) return ack?.({ error: result.error });
+      const vote = result;
+      kickVoteTimers.set(
+        room.roomCode,
+        setTimeout(() => {
+          const current = rooms.get(room.roomCode);
+          if (!current || current.kickVote?.id !== vote.id) return;
+          resolveKickVote(current);
+          broadcastRoom(io, current);
+        }, KICK_VOTE_DURATION_MS),
+      );
+      broadcastRoom(io, room);
+      ack?.({ ok: true, kickVote: vote });
+    }, ack);
+  });
+
+  socket.on("kick-vote:cast", (
+    payload: { vote?: "yes" | "no" },
+    ack?: (response: SocketAck) => void,
+  ) => {
+    safe(() => {
+      const meta = socketIndex.get(socket.id);
+      const room = meta ? getRoom(meta.roomCode) : undefined;
+      if (!room || !meta) return ack?.({ error: "Room not found" });
+      const choice = payload?.vote;
+      if (choice !== "yes" && choice !== "no") return ack?.({ error: "Invalid vote" });
+      const result = castKickVote(room, meta.guestId, choice);
+      if ("error" in result) return ack?.({ error: result.error });
+      broadcastRoom(io, room);
+      ack?.({ ok: true });
+    }, ack);
+  });
+
+  /* ── Co-host management (host only) ── */
+
+  socket.on("room:make-cohost", (
+    payload: { guestId?: string; enabled?: boolean },
+    ack?: (response: SocketAck) => void,
+  ) => {
+    safe(() => {
+      const room = requireHost(ack);
+      if (!room) return;
+      const guestId = trimString(payload?.guestId);
+      if (!guestId) return ack?.({ error: "guestId required" });
+      const isCurrentlyCohost = room.cohosts.includes(guestId);
+      const enabled = typeof payload?.enabled === "boolean" ? payload.enabled : !isCurrentlyCohost;
+      const result = setCohost(room, guestId, enabled);
       if ("error" in result) return ack?.({ error: result.error });
       broadcastRoom(io, room);
       ack?.({ ok: true });

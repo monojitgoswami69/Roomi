@@ -45,6 +45,19 @@ export type SkipVote = {
   noCount: number;
 };
 
+export type KickVote = {
+  id: string;
+  targetId: string;
+  targetName: string;
+  initiatorId: string;
+  initiatorName: string;
+  startedAt: number;
+  endsAt: number;
+  votes: Record<string, "yes" | "no">;
+  yesCount: number;
+  noCount: number;
+};
+
 export type RoomState = {
   roomCode: string;
   hostId: string;
@@ -55,7 +68,9 @@ export type RoomState = {
   guests: Record<string, string>;
   pendingGuests: Record<string, string>;
   guestCount: number;
+  cohosts: string[];
   skipVote: SkipVote | null;
+  kickVote: KickVote | null;
 };
 
 export type JoinStatus = "approved" | "pending";
