@@ -62,7 +62,7 @@ export default function RoomQRCode({ value }: { value: string }) {
   });
 
   return (
-    <svg className="h-[136px] w-[136px]" viewBox={`0 0 ${size} ${size}`}>
+    <svg className="h-full w-full" viewBox={`0 0 ${size} ${size}`}>
       {paths}
     </svg>
   );

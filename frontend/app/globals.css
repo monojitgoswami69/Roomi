@@ -1,7 +1,8 @@
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@100..1000&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Google Sans Flex", ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -153,10 +154,15 @@ input::placeholder {
   font-weight: 400;
 }
 
-input:focus {
+input:not([type="range"]):focus {
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 1px var(--accent) !important;
   outline: none;
+}
+
+input[type="range"]:focus {
+  box-shadow: none !important;
+  outline: none !important;
 }
 
 /* ═══ FOCUS ═══ */

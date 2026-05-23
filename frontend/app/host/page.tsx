@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
   ChevronUp,
   Copy,
+  Crown,
   DoorClosed,
+  EyeOff,
   FastForward,
   ListMusic,
   Lock,
@@ -17,6 +20,7 @@ import {
   Plus,
   QrCode,
   Rewind,
+  Settings,
   SkipBack,
   SkipForward,
   UserCheck,
@@ -99,7 +103,6 @@ export default function HostPage() {
   const [playbackState, setPlaybackState] = useState<PlaybackState | null>(null);
   const [progressMs, setProgressMs] = useState(0);
   const [showSearch, setShowSearch] = useState(false);
-  const [showGuests, setShowGuests] = useState(false);
   const [showDrawer, setShowDrawer] = useState(false);
   const [copied, setCopied] = useState(false);
   const [origin] = useState(() => (typeof window !== "undefined" ? window.location.origin : ""));
@@ -108,6 +111,17 @@ export default function HostPage() {
   const [socketStatus, setSocketStatus] = useState<
     "connecting" | "connected" | "reconnecting" | "offline"
   >("connecting");
+
+  /* Settings Panel & Visual Customisation States */
+  const [showSettings, setShowSettings] = useState(false);
+  const [showGuestsDropdown, setShowGuestsDropdown] = useState(false);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
+  const [glowTheme, setGlowTheme] = useState<"cyberpunk" | "aurora" | "midnight" | "amber">("cyberpunk");
+  const [limitSongs, setLimitSongs] = useState(true);
+  const [maxSongsPerGuest, setMaxSongsPerGuest] = useState(3);
+  const [preventDuplicates, setPreventDuplicates] = useState(true);
+  const [enableVoting, setEnableVoting] = useState(true);
+  const [anonymousMode, setAnonymousMode] = useState(false);
 
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
   useEffect(() => { queueRef.current = queue; }, [queue]);
@@ -821,84 +835,426 @@ export default function HostPage() {
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-3 pb-6 lg:h-full lg:overflow-hidden lg:p-4 lg:pl-8">
             <div className="flex min-h-full flex-col lg:h-full lg:overflow-hidden">
-              <div className="z-20 shrink-0 border-b border-white/10 pb-4 pt-3 lg:border-white/8 lg:pb-5 lg:pt-5">
-                <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_auto] lg:grid-cols-[minmax(0,1fr)_minmax(180px,0.9fr)_clamp(112px,9vw,148px)] xl:grid-cols-[minmax(0,1fr)_minmax(220px,0.9fr)_148px]">
-                  <div className="flex h-full min-w-0 flex-col justify-start">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">Room ID</p>
-                      <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2.5">
-                        <h2 className="min-w-0 break-all font-mono text-[clamp(2rem,8vw,2.6rem)] font-bold tracking-[0.18em] text-sky-300 lg:text-[clamp(2rem,3vw,2.35rem)]">
-                          {roomCode}
-                        </h2>
-                        <button
-                          type="button"
-                          onClick={copyCode}
-                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-slate-300 transition hover:text-sky-200"
-                          aria-label="Copy room code"
-                        >
-                          {copied ? <Check className="h-5 w-5 text-emerald-300" /> : <Copy className="h-5 w-5" />}
-                        </button>
+              <div className={`z-20 shrink-0 border-b border-white/10 relative transition-all duration-500 ease-in-out ${
+                isHeaderCollapsed ? "pb-3 pt-3" : "pb-6 pt-5"
+              }`}>
+                {/* Always-Visible Row (Holds compact left-side and right-side controls) */}
+                <div className="flex items-center justify-between w-full select-none">
+                  {/* Left: Compact Room ID & Copy Button (Fades out when expanded) */}
+                  <div className={`flex items-center gap-2.5 transition-all duration-500 ease-in-out ${
+                    isHeaderCollapsed ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-4 pointer-events-none"
+                  }`}>
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-200/50">Room ID</span>
+                    <span className="font-mono text-sm font-bold tracking-wider text-sky-300">{roomCode}</span>
+                    <button
+                      type="button"
+                      onClick={copyCode}
+                      className="inline-flex h-6 w-6 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none"
+                      aria-label="Copy room code"
+                    >
+                      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+
+                  {/* Right: Guest Button + Settings Button + Collapse/Expand Chevron */}
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    {/* Connected Guests Button and Popup Dropdown */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowGuestsDropdown(!showGuestsDropdown);
+                          setShowSettings(false);
+                        }}
+                        className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-bold transition-all duration-300 focus:outline-none ${
+                          showGuestsDropdown ? "text-sky-300 bg-white/5 scale-105" : "text-slate-400 hover:text-slate-200 hover:scale-105"
+                        }`}
+                        aria-label="Connected Guests"
+                      >
+                        <Users className="h-4 w-4" />
+                        <span className="font-mono text-[11px]">{guestCount}</span>
+                      </button>
+
+                      {showGuestsDropdown && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-40 bg-transparent cursor-default"
+                            onClick={() => setShowGuestsDropdown(false)}
+                          />
+                          <div className="absolute right-0 top-full mt-2 z-50 w-[min(calc(100vw-2rem),24rem)] max-h-[60vh] overflow-y-auto rounded-[24px] border border-white/10 bg-[#040816]/95 p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)] backdrop-blur-2xl animate-scale-in no-scrollbar space-y-4">
+                            {/* Waitlist (Requests) Section */}
+                            <section className="space-y-2.5">
+                              <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-amber-300/80 select-none">
+                                Waitlist ({visiblePendingGuests.length})
+                              </h4>
+                              {visiblePendingGuests.length === 0 ? (
+                                <p className="text-[10px] text-slate-500/80 px-1 py-1 select-none">No guests are waiting to join.</p>
+                              ) : (
+                                <div className="space-y-2 divide-y divide-white/5">
+                                  {visiblePendingGuests.map((guest) => (
+                                    <div key={guest.id} className="flex items-center justify-between py-1.5 px-1 animate-scale-in select-none">
+                                      <span className="text-xs font-semibold text-slate-200 truncate pr-2">{guest.name}</span>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <button
+                                          type="button"
+                                          disabled={approvingGuestId === guest.id}
+                                          onClick={() => handleGuestModeration(guest.id, "approve-guest")}
+                                          className="inline-flex h-6 items-center gap-1 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400 transition"
+                                        >
+                                          <UserCheck className="h-3 w-3" />
+                                          Approve
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={approvingGuestId === guest.id}
+                                          onClick={() => handleGuestModeration(guest.id, "reject-guest")}
+                                          className="inline-flex h-6 items-center gap-1 rounded-md bg-white/5 hover:bg-white/10 px-2.5 text-[9px] font-bold uppercase tracking-wider text-slate-400 transition"
+                                        >
+                                          <UserRoundX className="h-3 w-3" />
+                                          Reject
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </section>
+
+                            <hr className="border-t border-white/5 select-none" />
+
+                            {/* Connected Guests Section */}
+                            <section className="space-y-2.5">
+                              <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-sky-300/80 select-none">
+                                Connected ({visibleGuests.length})
+                              </h4>
+                              {visibleGuests.length === 0 ? (
+                                <p className="text-[10px] text-slate-500/80 px-1 py-1 select-none">No active guests connected.</p>
+                              ) : (
+                                <div className="space-y-2 divide-y divide-white/5 max-h-[25vh] overflow-y-auto no-scrollbar">
+                                  {visibleGuests.map((guest) => (
+                                    <div key={guest.id} className="flex items-center justify-between py-2 px-1 animate-scale-in select-none">
+                                      <span className="text-xs font-semibold text-slate-200 truncate pr-2">{guest.name}</span>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        {/* Make Co-Host Button */}
+                                        <button
+                                          type="button"
+                                          disabled={approvingGuestId === guest.id}
+                                          onClick={() => {
+                                            socketRef.current?.emit("room:make-cohost", { guestId: guest.id });
+                                            alert(`Emitted co-host privileges invite event for ${guest.name}!`);
+                                          }}
+                                          className="inline-flex h-6 items-center gap-1 rounded-md bg-amber-500/10 hover:bg-amber-500/20 px-2.5 text-[9px] font-bold uppercase tracking-wider text-amber-300 transition"
+                                          title="Grant Host Privileges"
+                                        >
+                                          <Crown className="h-2.5 w-2.5 text-amber-400" />
+                                          Co-Host
+                                        </button>
+
+                                        <button
+                                          type="button"
+                                          disabled={approvingGuestId === guest.id}
+                                          onClick={() => handleGuestModeration(guest.id, "kick-guest")}
+                                          className="inline-flex h-6 items-center gap-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 px-2 text-[9px] font-bold uppercase tracking-wider text-rose-300 transition"
+                                        >
+                                          <DoorClosed className="h-2.5 w-2.5" />
+                                          Kick
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </section>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Settings Dropdown Button and Popup */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSettings(!showSettings);
+                          setShowGuestsDropdown(false);
+                        }}
+                        className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none hover:scale-105"
+                        aria-label="Room Settings"
+                      >
+                        <Settings 
+                          className={`h-4.5 w-4.5 transition-transform duration-500 ease-out ${
+                            showSettings ? "rotate-90 text-sky-300 scale-110" : "rotate-0 text-slate-400"
+                          }`} 
+                        />
+                      </button>
+
+                      {showSettings && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-40 bg-transparent cursor-default"
+                            onClick={() => setShowSettings(false)}
+                          />
+                          <div className="absolute right-0 top-full mt-2 z-50 w-[min(calc(100vw-2rem),24rem)] max-h-[60vh] overflow-y-auto rounded-[24px] border border-white/10 bg-[#040816]/95 p-5 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)] backdrop-blur-2xl animate-scale-in no-scrollbar">
+                            {/* Dropdown Scrollable Settings */}
+                            <div className="space-y-4">
+                              {/* Room Settings */}
+                              <section className="space-y-2.5">
+                                <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-sky-300/80">Room Settings</h4>
+                                
+                                <div className="relative grid grid-cols-2 rounded-xl border border-white/10 bg-slate-950/50 p-1 select-none">
+                                  {/* Sliding background pill indicator */}
+                                  <div 
+                                    className={`absolute bottom-1 top-1 rounded-lg bg-gradient-to-r transition-all duration-300 ease-out ${
+                                      roomAccess === "open" 
+                                        ? "left-1 right-[calc(50%+4px)] from-emerald-500 to-teal-400 shadow-[0_0_12px_rgba(16,185,129,0.25)]" 
+                                        : "left-[calc(50%+4px)] right-1 from-amber-500 to-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.25)]"
+                                    }`}
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={accessUpdating}
+                                    onClick={() => setRoomAccess("open")}
+                                    className={`relative z-10 flex h-7 items-center justify-center gap-1.5 rounded-lg text-[10px] font-bold transition duration-300 focus:outline-none ${
+                                      roomAccess === "open" ? "text-slate-950" : "text-slate-400 hover:text-slate-200"
+                                    }`}
+                                  >
+                                    <LockOpen className="h-3.5 w-3.5" />
+                                    Open Joining
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={accessUpdating}
+                                    onClick={() => setRoomAccess("locked")}
+                                    className={`relative z-10 flex h-7 items-center justify-center gap-1.5 rounded-lg text-[10px] font-bold transition duration-300 focus:outline-none ${
+                                      roomAccess === "locked" ? "text-slate-950" : "text-slate-400 hover:text-slate-200"
+                                    }`}
+                                  >
+                                    <Lock className="h-3.5 w-3.5" />
+                                    Locked Joining
+                                  </button>
+                                </div>
+
+                                {/* Detailed Status Explanation */}
+                                <div className="px-1 text-[10px] leading-relaxed text-slate-400/80 animate-scale-in transition-all duration-300 select-none">
+                                  {roomAccess === "open" ? (
+                                    <p>
+                                      <strong className="text-emerald-400 font-semibold">Open Mode:</strong> Anyone with the room link can join and immediately suggest, vote, or add tracks to the queue. Best for friendly collaborative hangouts.
+                                    </p>
+                                  ) : (
+                                    <p>
+                                      <strong className="text-amber-400 font-semibold">Locked Mode:</strong> New users joining will be placed in a request queue. You must manually approve them from the guests panel before they can view or interact with the player.
+                                    </p>
+                                  )}
+                                </div>
+                              </section>
+
+                              <hr className="border-t border-white/5 my-1" />
+
+                              {/* Anonymous Guest Mode */}
+                              <section className="space-y-2">
+                                <div className="flex items-center justify-between text-xs py-1">
+                                  <div className="max-w-[70%]">
+                                    <h4 className="font-semibold text-slate-200">Anonymous Mode</h4>
+                                    <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">Hide connected guests and queue attributions.</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setAnonymousMode(!anonymousMode)}
+                                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                      anonymousMode ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.25)]" : "bg-zinc-700"
+                                    }`}
+                                  >
+                                    <span
+                                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ease-in-out ${
+                                        anonymousMode ? "translate-x-4" : "translate-x-0"
+                                      }`}
+                                    />
+                                  </button>
+                                </div>
+                                {anonymousMode && (
+                                  <div className="rounded-lg border border-sky-400/10 bg-sky-500/5 p-2.5 flex gap-2 items-start animate-scale-in select-none">
+                                    <EyeOff className="h-3.5 w-3.5 text-sky-400 shrink-0 mt-0.5" />
+                                    <p className="text-[10px] leading-relaxed text-sky-300">
+                                      Guest list and song/vote attributions are hidden for guests.
+                                    </p>
+                                  </div>
+                                )}
+                              </section>
+
+                              <hr className="border-t border-white/5 my-1" />
+
+                              {/* Queue Settings */}
+                              <section className="space-y-3">
+                                <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] text-sky-300/80">Queue Settings</h4>
+
+                                {/* Limit Submissions */}
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-xs py-1">
+                                    <div>
+                                      <h4 className="font-semibold text-slate-200">Limit Songs per Guest</h4>
+                                      <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">Limit how many active songs guests can add.</p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setLimitSongs(!limitSongs)}
+                                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                        limitSongs ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.25)]" : "bg-zinc-700"
+                                      }`}
+                                    >
+                                      <span
+                                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ease-in-out ${
+                                          limitSongs ? "translate-x-4" : "translate-x-0"
+                                        }`}
+                                      />
+                                    </button>
+                                  </div>
+                                  {limitSongs && (
+                                    <div className="space-y-2.5 pt-1.5 px-1 text-xs animate-scale-in select-none">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[10px] text-slate-400/80">Max active songs per guest</span>
+                                        <span className="inline-flex items-center justify-center rounded-full bg-sky-500/10 px-2 py-0.5 font-mono text-[10px] font-bold text-sky-400">
+                                          {maxSongsPerGuest} {maxSongsPerGuest === 1 ? "song" : maxSongsPerGuest === 15 ? "songs (Max)" : "songs"}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-2.5">
+                                        <span className="text-[9px] font-semibold text-slate-500 w-3">1</span>
+                                        <input
+                                          type="range"
+                                          min="1"
+                                          max="15"
+                                          value={maxSongsPerGuest}
+                                          onChange={(e) => setMaxSongsPerGuest(Number(e.target.value))}
+                                          className="vol-slider h-1 flex-1 cursor-pointer appearance-none rounded-lg focus:outline-none select-none active:outline-none touch-none"
+                                          style={{
+                                            background: `linear-gradient(to right, #38bdf8 0%, #38bdf8 ${maxSongsPerGuest === 1 ? 0 : ((maxSongsPerGuest - 1) / 14) * 100}%, rgba(255,255,255,0.1) ${maxSongsPerGuest === 1 ? 0 : ((maxSongsPerGuest - 1) / 14) * 100}%, rgba(255,255,255,0.1) 100%)`
+                                          }}
+                                        />
+                                        <span className="text-[9px] font-semibold text-slate-500 w-3 text-right">15</span>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <hr className="border-t border-white/5 my-1" />
+
+                                {/* Prevent Duplicate Songs */}
+                                <div className="flex items-center justify-between text-xs py-1">
+                                  <div>
+                                    <h4 className="font-semibold text-slate-200">Block Duplicate Tracks</h4>
+                                    <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">Prevent duplicate queue entries.</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setPreventDuplicates(!preventDuplicates)}
+                                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                      preventDuplicates ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.25)]" : "bg-zinc-700"
+                                    }`}
+                                  >
+                                    <span
+                                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ease-in-out ${
+                                        preventDuplicates ? "translate-x-4" : "translate-x-0"
+                                      }`}
+                                    />
+                                  </button>
+                                </div>
+
+                                <hr className="border-t border-white/5 my-1" />
+
+                                {/* Enable Live Voting */}
+                                <div className="flex items-center justify-between text-xs py-1">
+                                  <div>
+                                    <h4 className="font-semibold text-slate-200">Enable Guest Voting</h4>
+                                    <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">Allow guests to upvote queue tracks.</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEnableVoting(!enableVoting)}
+                                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                      enableVoting ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.25)]" : "bg-zinc-700"
+                                    }`}
+                                  >
+                                    <span
+                                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ease-in-out ${
+                                        enableVoting ? "translate-x-4" : "translate-x-0"
+                                      }`}
+                                    />
+                                  </button>
+                                </div>
+                              </section>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Expand/Collapse Chevron Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsHeaderCollapsed(!isHeaderCollapsed);
+                        setShowSettings(false);
+                        setShowGuestsDropdown(false);
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-slate-200 transition-all focus:outline-none hover:scale-110 active:scale-95"
+                      aria-label={isHeaderCollapsed ? "Expand header" : "Collapse header"}
+                    >
+                      <ChevronDown 
+                        className={`h-4 w-4 text-slate-400 transition-transform duration-500 ease-in-out ${
+                          isHeaderCollapsed ? "rotate-0 animate-pulse" : "rotate-180"
+                        }`} 
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Collapsible Content Area (Centred room ID + QR Code) with smooth slide and fade transitions */}
+                <div 
+                  className="grid transition-all duration-500 ease-in-out overflow-hidden"
+                  style={{ gridTemplateRows: isHeaderCollapsed ? "0fr" : "1fr" }}
+                >
+                  <div className="min-h-0">
+                    <div className={`transition-all duration-500 ease-in-out transform origin-top ${
+                      isHeaderCollapsed ? "opacity-0 -translate-y-4 scale-95 pointer-events-none" : "opacity-100 translate-y-0 scale-100"
+                    }`}>
+                      {/* Centered Group: Room ID, Divider, and QR Code */}
+                      <div className="flex flex-col sm:flex-row items-center justify-center gap-6 py-5 mt-4 w-full border-t border-white/5">
+                        {/* Room ID and End Session button */}
+                        <div className="flex flex-col items-center sm:items-start text-center sm:text-left justify-center">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-sky-200/50">Room ID</p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <h2 className="font-mono text-4xl sm:text-5xl font-extrabold tracking-[0.2em] text-sky-300">
+                              {roomCode}
+                            </h2>
+                            <button
+                              type="button"
+                              onClick={copyCode}
+                              className="inline-flex h-8 w-8 items-center justify-center text-slate-400 hover:text-sky-300 transition-colors focus:outline-none active:scale-90"
+                              aria-label="Copy room code"
+                            >
+                              {copied ? <Check className="h-4.5 w-4.5 text-emerald-400" /> : <Copy className="h-4.5 w-4.5" />}
+                            </button>
+                          </div>
+                          {/* End Session Button directly underneath */}
+                          <div className="mt-3.5">
+                            <button
+                              type="button"
+                              onClick={() => void endSession()}
+                              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 px-3.5 text-[10px] font-bold uppercase tracking-[0.08em] text-rose-300 transition hover:bg-rose-500/20 active:scale-95"
+                            >
+                              <LogOut className="h-3 w-3" />
+                              <span>End session</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Vertical Separator Pill */}
+                        <div className="hidden sm:block h-14 w-[1px] bg-white/10" />
+
+                        {/* QR Code Graphic (Naked directly on the page background) */}
+                        <div className="flex items-center justify-center h-28 w-28 select-none transition duration-300 hover:scale-105 shrink-0">
+                          {joinUrl ? <RoomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400 animate-pulse" />}
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="mt-4 flex w-full max-w-[12rem] flex-col gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowGuests(true)}
-                        className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
-                      >
-                        <Users className="h-3.5 w-3.5" />
-                        <span className="truncate">{guestCount} connected</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void endSession()}
-                        className="inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-md border border-rose-400/20 bg-rose-500/10 px-2 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20"
-                        aria-label="End session"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        <span className="truncate">End session</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex h-full min-w-0 flex-col justify-start">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-200/55">Room status</p>
-                      <p className="mt-2 max-w-[18rem] text-[13px] leading-6 text-slate-400">
-                        Choose whether guests join freely or need host approval.
-                      </p>
-                    </div>
-
-                    <div className="mt-4 inline-flex h-9 w-fit max-w-full items-center rounded-md border border-white/10 bg-slate-950/40 p-1">
-                      <button
-                        type="button"
-                        disabled={accessUpdating}
-                        onClick={() => setRoomAccess("open")}
-                        className={`inline-flex h-7 items-center gap-1.5 rounded px-3 text-xs font-semibold transition ${
-                          roomAccess === "open" ? "bg-sky-400 text-slate-950" : "text-slate-300 hover:bg-white/8"
-                        }`}
-                      >
-                        <LockOpen className="h-3.5 w-3.5" />
-                        Open
-                      </button>
-                      <button
-                        type="button"
-                        disabled={accessUpdating}
-                        onClick={() => setRoomAccess("locked")}
-                        className={`inline-flex h-7 items-center gap-1.5 rounded px-3 text-xs font-semibold transition ${
-                          roomAccess === "locked" ? "bg-amber-300 text-slate-950" : "text-slate-300 hover:bg-white/8"
-                        }`}
-                      >
-                        <Lock className="h-3.5 w-3.5" />
-                        Locked
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex h-full items-start justify-end p-0">
-                    <div className="flex shrink-0 scale-[0.72] origin-top-right min-[420px]:scale-[0.78] sm:scale-[0.84] lg:scale-100">
-                      {joinUrl ? <RoomQRCode value={joinUrl} /> : <QrCode className="h-10 w-10 text-slate-400" />}
                     </div>
                   </div>
                 </div>
@@ -962,98 +1318,6 @@ export default function HostPage() {
           </div>
         </section>
       </main>
-
-      {showGuests ? (
-        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm">
-          <div className="mx-auto flex h-full w-full max-w-4xl items-center px-4 py-6 sm:px-6">
-            <div className="w-full overflow-hidden rounded-[28px] border border-white/10 bg-[linear-gradient(145deg,rgba(7,18,46,0.96),rgba(3,8,22,0.98))] shadow-[0_40px_110px_rgba(0,0,0,0.62)]">
-              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4 sm:px-6">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-sky-200/65">Room Guests</p>
-                  <p className="mt-1 text-sm text-slate-300">
-                    {visibleGuests.length} connected • {visiblePendingGuests.length} waiting
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowGuests(false)}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-300 transition hover:bg-white/10"
-                  aria-label="Close guests"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="grid max-h-[70vh] gap-0 overflow-hidden md:grid-cols-2">
-                <section className="border-b border-white/10 p-5 md:border-b-0 md:border-r md:border-white/10 sm:p-6">
-                  <h3 className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/70">Waitlist</h3>
-                  <div className="space-y-3 overflow-y-auto pr-1">
-                    {visiblePendingGuests.length === 0 ? (
-                      <p className="text-sm text-slate-500">No guests are waiting.</p>
-                    ) : (
-                      visiblePendingGuests.map((guest) => (
-                        <div
-                          key={guest.id}
-                          className="rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-3"
-                        >
-                          <p className="truncate text-sm font-semibold text-slate-50">{guest.name}</p>
-                          <div className="mt-3 flex gap-2">
-                            <button
-                              type="button"
-                              disabled={approvingGuestId === guest.id}
-                              onClick={() => handleGuestModeration(guest.id, "approve-guest")}
-                              className="inline-flex items-center gap-1 rounded-lg bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:opacity-60"
-                            >
-                              <UserCheck className="h-3.5 w-3.5" />
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              disabled={approvingGuestId === guest.id}
-                              onClick={() => handleGuestModeration(guest.id, "reject-guest")}
-                              className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/10 disabled:opacity-60"
-                            >
-                              <UserRoundX className="h-3.5 w-3.5" />
-                              Reject
-                            </button>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-
-                <section className="p-5 sm:p-6">
-                  <h3 className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-sky-200/70">Connected</h3>
-                  <div className="space-y-3 overflow-y-auto pr-1">
-                    {visibleGuests.length === 0 ? (
-                      <p className="text-sm text-slate-500">No active guests yet.</p>
-                    ) : (
-                      visibleGuests.map((guest) => (
-                        <div
-                          key={guest.id}
-                          className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3"
-                        >
-                          <p className="truncate text-sm font-semibold text-slate-100">{guest.name}</p>
-                          <button
-                            type="button"
-                            disabled={approvingGuestId === guest.id}
-                            onClick={() => handleGuestModeration(guest.id, "kick-guest")}
-                            className="inline-flex items-center gap-1 rounded-lg border border-rose-400/25 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-60"
-                          >
-                            <DoorClosed className="h-3.5 w-3.5" />
-                            Kick
-                          </button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       <SearchModal
         open={showSearch}

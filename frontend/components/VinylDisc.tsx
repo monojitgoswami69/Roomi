@@ -12,9 +12,10 @@ interface Track {
 interface VinylDiscProps {
   track: Track | null;
   isPlaying: boolean;
+  theme?: "cyberpunk" | "aurora" | "midnight" | "amber";
 }
 
-export default function VinylDisc({ track, isPlaying }: VinylDiscProps) {
+export default function VinylDisc({ track, isPlaying, theme = "cyberpunk" }: VinylDiscProps) {
   const hasTrack = Boolean(track);
 
   // Define tonearm rotation based on track status and playback
@@ -24,90 +25,120 @@ export default function VinylDisc({ track, isPlaying }: VinylDiscProps) {
     return isPlaying && hasTrack ? 6 : -28;
   }, [hasTrack, isPlaying]);
 
+  // Define dynamic colored neon backing aura themes
+  const auraGlow = useMemo(() => {
+    switch (theme) {
+      case "aurora":
+        return isPlaying
+          ? "radial-gradient(circle, rgba(16,185,129,0.32) 0%, rgba(56,189,248,0.18) 45%, rgba(99,102,241,0.06) 65%, rgba(0,0,0,0) 80%)"
+          : "radial-gradient(circle, rgba(16,185,129,0.12) 0%, rgba(0,0,0,0) 70%)";
+      case "midnight":
+        return isPlaying
+          ? "radial-gradient(circle, rgba(139,92,246,0.3) 0%, rgba(219,39,119,0.18) 45%, rgba(99,102,241,0.06) 65%, rgba(0,0,0,0) 80%)"
+          : "radial-gradient(circle, rgba(139,92,246,0.12) 0%, rgba(0,0,0,0) 70%)";
+      case "amber":
+        return isPlaying
+          ? "radial-gradient(circle, rgba(245,158,11,0.28) 0%, rgba(239,68,68,0.16) 45%, rgba(251,191,36,0.08) 65%, rgba(0,0,0,0) 80%)"
+          : "radial-gradient(circle, rgba(245,158,11,0.1) 0%, rgba(0,0,0,0) 70%)";
+      case "cyberpunk":
+      default:
+        return isPlaying
+          ? "radial-gradient(circle, rgba(139,92,246,0.2) 0%, rgba(56,189,248,0.12) 40%, rgba(0,0,0,0) 75%)"
+          : "radial-gradient(circle, rgba(139,92,246,0.06) 0%, rgba(0,0,0,0) 65%)";
+    }
+  }, [isPlaying, theme]);
+
   return (
-    <div className="relative w-[19rem] h-[19rem] lg:w-[35rem] lg:h-[35rem] flex items-center justify-center overflow-visible select-none pointer-events-none">
+    <div className="relative w-[70vw] h-[70vw] min-w-[12rem] min-h-[12rem] max-w-[18rem] max-h-[18rem] lg:w-[28vw] lg:h-[28vw] lg:min-w-[24rem] lg:min-h-[24rem] lg:max-w-[31rem] lg:max-h-[31rem] flex items-center justify-center overflow-visible select-none pointer-events-none">
       
       {/* 1. Dynamic Backlight Neon Aura (Leverages soft, minimal colors to distinguish the floating disc against the dark background) */}
       <div
         className="vinyl-aura absolute -inset-6 lg:-inset-10 rounded-full opacity-0 mix-blend-screen transition-all duration-1000"
         style={{
-          background: isPlaying
-            ? "radial-gradient(circle, rgba(139,92,246,0.2) 0%, rgba(56,189,248,0.12) 40%, rgba(0,0,0,0) 75%)"
-            : "radial-gradient(circle, rgba(139,92,246,0.06) 0%, rgba(0,0,0,0) 65%)",
+          background: auraGlow,
           opacity: hasTrack ? (isPlaying ? 1 : 0.45) : 0,
         }}
       />
 
-      {/* 2. Soft Shadow Base Platter (Translucent backing separating the record from the page with light shadows) */}
-      <div className="absolute w-[17.8rem] h-[17.8rem] lg:w-[33.2rem] lg:h-[33.2rem] rounded-full bg-zinc-950/80 shadow-[0_8px_32px_rgba(0,0,0,0.4)] border border-white/[0.03]" />
-
-      {/* 3. The Spinning Vinyl Record Disc (Scaled Up) */}
-      <div
-        className="record-spin absolute w-[17rem] h-[17rem] lg:w-[32rem] lg:h-[32rem] rounded-full flex items-center justify-center overflow-hidden transition-transform duration-[1200ms]"
-        style={{
-          animationPlayState: isPlaying ? "running" : "paused",
-          background:
-            "conic-gradient(from 45deg, #121212, #242424, #121212, #2f2f2f, #121212, #242424, #121212, #2f2f2f, #121212), radial-gradient(circle, transparent 20%, #161616 21%, #090909 100%)",
-          backgroundBlendMode: "overlay",
-          boxShadow: "inset 0 1.5px 3px rgba(255,255,255,0.15), inset 0 -2px 4px rgba(0,0,0,0.8)",
-        }}
-      >
-        {/* Micro-Groove concentric texture */}
-        <div className="vinyl-grooves absolute inset-0 rounded-full opacity-65 mix-blend-overlay" />
-
-        {/* Groove segment rings */}
-        <div className="absolute inset-[15%] rounded-full border border-black/40" />
-        <div className="absolute inset-[28%] rounded-full border border-black/35" />
-        <div className="absolute inset-[42%] rounded-full border border-black/30" />
-        <div className="absolute inset-[65%] rounded-full border border-black/25" />
-
-        {/* High-Gloss Light Shimmer reflections */}
+      {/* 2. Platter & Vinyl Body Container */}
+      <div className="relative w-full h-full rounded-full flex items-center justify-center overflow-hidden">
+        
+        {/* 3a. The Spinning Vinyl Record (Grooves, ridges, and glares rotate together for highly visible motion!) */}
         <div
-          className="absolute inset-0 rounded-full mix-blend-screen opacity-90"
+          className="record-spin absolute inset-0 rounded-full flex items-center justify-center overflow-hidden"
           style={{
+            animationPlayState: isPlaying ? "running" : "paused",
             background:
-              "conic-gradient(from 0deg, transparent 5%, rgba(255,255,255,0.06) 12%, transparent 20%, transparent 40%, rgba(255,255,255,0.08) 50%, transparent 60%, transparent 80%, rgba(255,255,255,0.06) 88%, transparent 95%)",
-          }}
-        />
-
-        {/* Polished Edge Rim */}
-        <div className="absolute inset-0 rounded-full border-[1.5px] border-white/5" />
-
-        {/* 4. Center Album Art Label */}
-        <div
-          className="absolute w-[6.2rem] h-[6.2rem] lg:w-[11.5rem] lg:h-[11.5rem] overflow-hidden rounded-full flex items-center justify-center z-10 shadow-[0_4px_10px_rgba(0,0,0,0.45)]"
-          style={{
-            background: "linear-gradient(135deg, #18181b, #09090b)",
-            maskImage: "radial-gradient(circle, black 65%, rgba(0,0,0,0.85) 90%, transparent 100%)",
-            WebkitMaskImage: "radial-gradient(circle, black 65%, rgba(0,0,0,0.85) 90%, transparent 100%)",
+              "conic-gradient(from 45deg, #101010, #1c1c1c, #101010, #262626, #101010, #1c1c1c, #101010, #262626, #101010), radial-gradient(circle, transparent 20%, #161616 21%, #0a0a0a 22%, #161616 24%, #0a0a0a 26%, #222 28%, #0a0a0a 32%, #161616 36%, #0a0a0a 40%, #181818 45%, #0a0a0a 50%, #222 55%, #0a0a0a 60%, #161616 68%, #0a0a0a 76%, #161616 84%, #0a0a0a 92%, #121212 100%)",
+            backgroundBlendMode: "overlay",
+            boxShadow: "inset 0 1.5px 3px rgba(255,255,255,0.15), inset 0 -2px 4px rgba(0,0,0,0.8)",
           }}
         >
-          {hasTrack && track?.albumArt ? (
-            <img
-              src={track.albumArt}
-              alt={track.title}
-              className="h-full w-full object-cover select-none"
-              draggable={false}
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center bg-zinc-900">
-              <Music className="h-7 w-7 lg:h-12 lg:w-12 text-white/35" />
+          {/* Concentric Micro-Groove texture */}
+          <div className="vinyl-grooves absolute inset-0 rounded-full opacity-70 mix-blend-overlay pointer-events-none" />
+
+          {/* Finer subtle inner groove rings */}
+          <div className="absolute inset-[15%] rounded-full border border-black/45 pointer-events-none" />
+          <div className="absolute inset-[28%] rounded-full border border-black/40 pointer-events-none" />
+          <div className="absolute inset-[42%] rounded-full border border-black/35 pointer-events-none" />
+          <div className="absolute inset-[65%] rounded-full border border-black/30 pointer-events-none" />
+
+          {/* Glossy High-Gloss Lighting Shimmers (Now rotating to make the spinning motion extremely obvious and satisfying) */}
+          <div
+            className="absolute inset-0 rounded-full mix-blend-screen opacity-90 pointer-events-none"
+            style={{
+              background:
+                "conic-gradient(from -25deg, transparent 4%, rgba(255,255,255,0.07) 12%, transparent 22%, transparent 45%, rgba(255,255,255,0.09) 50%, transparent 58%, transparent 78%, rgba(255,255,255,0.07) 86%, transparent 94%)",
+            }}
+          />
+
+          {/* Center Album Art Label */}
+          <div
+            className="absolute w-[36%] h-[36%] overflow-hidden rounded-full flex items-center justify-center z-10 shadow-[0_4px_10px_rgba(0,0,0,0.45)]"
+            style={{
+              background: "linear-gradient(135deg, #18181b, #09090b)",
+              maskImage: "radial-gradient(circle, black 65%, rgba(0,0,0,0.85) 90%, transparent 100%)",
+              WebkitMaskImage: "radial-gradient(circle, black 65%, rgba(0,0,0,0.85) 90%, transparent 100%)",
+            }}
+          >
+            {hasTrack && track?.albumArt ? (
+              <img
+                src={track.albumArt}
+                alt={track.title}
+                className="h-full w-full object-cover select-none"
+                draggable={false}
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center bg-zinc-900">
+                <Music className="h-1/3 w-1/3 text-white/35" />
+              </div>
+            )}
+
+            {/* Vintage printed record label text layers */}
+            <div className="absolute top-[8%] left-1/2 -translate-x-1/2 z-20 pointer-events-none text-[clamp(4px,1.5vw,7.5px)] font-bold tracking-[0.25em] text-amber-400/80 uppercase select-none font-mono">
+              Roomi Recs
             </div>
-          )}
+            <div className="absolute bottom-[8%] left-1/2 -translate-x-1/2 z-20 pointer-events-none text-[clamp(4px,1.5vw,7.5px)] font-bold tracking-[0.25em] text-amber-400/80 uppercase select-none font-mono">
+              Hi-Fi Stereo
+            </div>
+          </div>
+
+          {/* Golden Brass Center Rim Accent */}
+          <div className="absolute w-[37.2%] h-[37.2%] rounded-full border-[1.5px] border-amber-500/25 mix-blend-overlay pointer-events-none" />
         </div>
 
-        {/* Golden Brass Center Rim Accent */}
-        <div className="absolute w-[6.4rem] h-[6.4rem] lg:w-[11.7rem] lg:h-[11.7rem] rounded-full border-[1.5px] border-amber-500/25 mix-blend-overlay" />
+        {/* Outer Edge Rim Polish Bevel (Stationary high-end rim highlight) */}
+        <div className="absolute inset-0 rounded-full border-[2px] border-white/5 shadow-[inset_0_2px_4px_rgba(255,255,255,0.15)] pointer-events-none z-10" />
       </div>
 
-      {/* 5. Spindle Pin (Polished steel/brass pin) */}
-      <div className="absolute w-2 h-2 lg:w-4.5 lg:h-4.5 bg-gradient-to-br from-zinc-300 via-zinc-100 to-zinc-400 rounded-full shadow-[0_1.5px_3px_rgba(0,0,0,0.5)] border border-zinc-500/40 z-20 flex items-center justify-center pointer-events-none">
-        <div className="w-0.5 h-0.5 lg:w-1.5 lg:h-1.5 bg-gradient-to-br from-zinc-100 to-zinc-300 rounded-full shadow-inner" />
+      {/* 4. Spindle Pin (Polished steel/brass pin) */}
+      <div className="absolute w-[2.6%] h-[2.6%] min-w-[8px] min-h-[8px] bg-gradient-to-br from-zinc-300 via-zinc-100 to-zinc-400 rounded-full shadow-[0_1.5px_3px_rgba(0,0,0,0.5)] border border-zinc-500/40 z-20 flex items-center justify-center pointer-events-none">
+        <div className="w-[40%] h-[40%] bg-gradient-to-br from-zinc-100 to-zinc-300 rounded-full shadow-inner" />
       </div>
 
-      {/* 6. Floating S-Shape Tonearm (Brought closer to the disc edge with light, clean shadows) */}
+      {/* 5. Floating S-Shape Tonearm (Sized and positioned in absolute percentages to scale 100% proportionally) */}
       <div
-        className="absolute z-30 w-[7.2rem] h-[14.4rem] lg:w-[12.5rem] lg:h-[25rem] top-[-2rem] right-[-1.4rem] lg:top-[-3.8rem] lg:right-[-2.5rem]"
+        className="absolute z-30 w-[42%] h-[84%] top-[-10%] right-[-7%]"
         style={{
           // Clean, modern, soft shadow offset instead of deep heavy black shadow
           filter: "drop-shadow(-4px 8px 6px rgba(0,0,0,0.25))",
@@ -137,8 +168,6 @@ export default function VinylDisc({ track, isPlaying }: VinylDiscProps) {
               <stop offset="100%" stopColor="#6366f1" />
             </linearGradient>
           </defs>
-
-
 
           {/* Pivot Base Hub Assembly (Stationary cylinder hub with brushed metal and blue neon indicators) */}
           <circle cx="70" cy="38" r="16" fill="#09090b" stroke="#27272a" strokeWidth="2" />
